@@ -135,6 +135,12 @@ shared-memory limits, reduce `--num-worker` (zero is also supported). Changing
 batch size or shortening training changes the experiment settings and must be
 reported separately from this runtime acceleration.
 
+`config/nturgbd-cross-subject/fast128.yaml` is a separate experiment preset with
+training/test batch size 128, two workers and one main-process CPU thread. It
+retains the 65-epoch schedule and learning rate, but changes training batch size
+from the original 64; validate its accuracy separately. Benchmark projections
+are hardware-dependent and do not guarantee a two-hour runtime.
+
 See the PyTorch [AMP documentation](https://docs.pytorch.org/docs/stable/amp.html)
 and [performance tuning guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html).
 
