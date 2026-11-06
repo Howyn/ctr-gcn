@@ -41,6 +41,12 @@ def init_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+def init_worker_seed(worker_id):
+    # DataLoader assigns each worker a distinct seed; workers do no CUDA work.
+    seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(seed)
+    random.seed(seed)
+
 def import_class(import_str):
     mod_str, _sep, class_str = import_str.rpartition('.')
     __import__(mod_str)
@@ -197,6 +203,16 @@ def get_parser():
         default=0.1,
         help='decay rate for learning rate')
     parser.add_argument('--warm_up_epoch', type=int, default=0)
+    parser.add_argument('--amp', type=str2bool, default=False,
+                        help='use CUDA float16 automatic mixed precision')
+    parser.add_argument('--fast', type=str2bool, default=False,
+                        help='enable cuDNN tuning, TF32 and persistent pinned data loading')
+    parser.add_argument('--cpu-threads', type=int, default=4,
+                        help='CPU threads for the main process in fast mode')
+    parser.add_argument('--benchmark-batches', type=int, default=50,
+                        help='timed batches per split for --phase benchmark')
+    parser.add_argument('--benchmark-warmup', type=int, default=10,
+                        help='untimed warmup batches per split for --phase benchmark')
 
     return parser
 
@@ -239,6 +255,7 @@ class Processor():
         self.best_acc_epoch = 0
 
         self.model = self.model.cuda(self.output_device)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=arg.amp)
 
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
@@ -250,21 +267,96 @@ class Processor():
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
-        if self.arg.phase == 'train':
+        loader_options = dict(
+            num_workers=self.arg.num_worker,
+            worker_init_fn=init_worker_seed if self.arg.fast else init_seed,
+            pin_memory=self.arg.fast,
+        )
+        if self.arg.fast and self.arg.num_worker > 0:
+            loader_options.update(persistent_workers=True, prefetch_factor=2)
+        if self.arg.phase in ('train', 'benchmark'):
             self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
                 shuffle=True,
-                num_workers=self.arg.num_worker,
                 drop_last=True,
-                worker_init_fn=init_seed)
+                **loader_options)
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=self.arg.num_worker,
             drop_last=False,
-            worker_init_fn=init_seed)
+            **loader_options)
+
+    def forward_loss(self, data, label):
+        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.arg.amp):
+            output = self.model(data)
+            loss = self.loss(output, label)
+        return output, loss
+
+    def train_batch(self, data, label):
+        self.optimizer.zero_grad(set_to_none=True)
+        output, loss = self.forward_loss(data, label)
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        return output, loss
+
+    def benchmark(self):
+        """Measure real data loading, transfers and computation without saving a model."""
+        if self.arg.benchmark_batches < 1 or self.arg.benchmark_warmup < 1:
+            raise ValueError('Benchmark batches and warmup must both be positive.')
+        epoch_seconds = 0.0
+        for split in ('train', 'test'):
+            loader = self.data_loader[split]
+            warmup = self.arg.benchmark_warmup
+            count = min(self.arg.benchmark_batches, len(loader) - warmup)
+            if count < 1:
+                raise ValueError('Not enough batches for the requested benchmark warmup.')
+            self.model.train(split == 'train')
+            if split == 'train':
+                self.adjust_learning_rate(0)
+            iterator = iter(loader)
+            # Iteration starts before timing; measured time includes fetching each batch.
+            measured_samples = 0
+            losses = []
+            start = None
+            for batch_idx in range(warmup + count):
+                if batch_idx == warmup:
+                    torch.cuda.synchronize(self.output_device)
+                    torch.cuda.reset_peak_memory_stats(self.output_device)
+                    start = time.perf_counter()
+                data, label, _ = next(iterator)
+                data = data.to(self.output_device, dtype=torch.float32, non_blocking=self.arg.fast)
+                label = label.to(self.output_device, dtype=torch.long, non_blocking=self.arg.fast)
+                with torch.set_grad_enabled(split == 'train'):
+                    if split == 'train':
+                        output, loss = self.train_batch(data, label)
+                    else:
+                        output, loss = self.forward_loss(data, label)
+                        # Match evaluation's transfer of class scores to the CPU.
+                        output.float().cpu().numpy()
+                losses.append(loss.detach())
+                if batch_idx >= warmup:
+                    measured_samples += data.shape[0]
+            torch.cuda.synchronize(self.output_device)
+            elapsed = time.perf_counter() - start
+            if not torch.isfinite(torch.stack(losses)).all().item():
+                raise RuntimeError('Non-finite loss during benchmark; do not start training.')
+            seconds_per_batch = elapsed / count
+            split_seconds = seconds_per_batch * len(loader)
+            epoch_seconds += split_seconds
+            self.print_log(
+                'BENCHMARK {}: {:.3f} s/batch, {:.1f} samples/s, '
+                'estimated {:.1f} s/epoch, peak allocated {:.2f} GiB'.format(
+                    split, seconds_per_batch, measured_samples / elapsed, split_seconds,
+                    torch.cuda.max_memory_allocated(self.output_device) / (1024 ** 3)))
+        self.print_log('BENCHMARK projected {} epochs + final test: {:.2f} hours '
+                       '(excludes startup, checkpoint/log writes; allow extra time).'.format(
+                           self.arg.num_epoch,
+                           (epoch_seconds * self.arg.num_epoch + split_seconds) / 3600))
+        self.print_log('Benchmark updated disposable weights; no checkpoint was saved. '
+                       'Start a fresh training process for the actual experiment.')
 
     def load_model(self):
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
@@ -381,34 +473,32 @@ class Processor():
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
         process = tqdm(loader, ncols=40)
+        epoch_start = time.perf_counter()
 
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
             with torch.no_grad():
-                data = data.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+                data = data.to(self.output_device, dtype=torch.float32, non_blocking=self.arg.fast)
+                label = label.to(self.output_device, dtype=torch.long, non_blocking=self.arg.fast)
             timer['dataloader'] += self.split_time()
 
             # forward
-            output = self.model(data)
-            loss = self.loss(output, label)
-            # backward
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            output, loss = self.train_batch(data, label)
 
-            loss_value.append(loss.data.item())
+            loss_value.append(loss.detach())
             timer['model'] += self.split_time()
 
             value, predict_label = torch.max(output.data, 1)
             acc = torch.mean((predict_label == label.data).float())
-            acc_value.append(acc.data.item())
-            self.train_writer.add_scalar('acc', acc, self.global_step)
-            self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
+            acc_value.append(acc.detach())
+            if not self.arg.fast or self.global_step % self.arg.log_interval == 0:
+                self.train_writer.add_scalar('acc', acc.item(), self.global_step)
+                self.train_writer.add_scalar('loss', loss.item(), self.global_step)
 
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
-            self.train_writer.add_scalar('lr', self.lr, self.global_step)
+            if not self.arg.fast or self.global_step % self.arg.log_interval == 0:
+                self.train_writer.add_scalar('lr', self.lr, self.global_step)
             timer['statistics'] += self.split_time()
 
         # statistics of time consumption and loss
@@ -417,7 +507,9 @@ class Processor():
             for k, v in timer.items()
         }
         self.print_log(
-            '\tMean training loss: {:.4f}.  Mean training acc: {:.2f}%.'.format(np.mean(loss_value), np.mean(acc_value)*100))
+            '\tMean training loss: {:.4f}.  Mean training acc: {:.2f}%.'.format(
+                torch.stack(loss_value).mean().item(), torch.stack(acc_value).mean().item()*100))
+        self.print_log('Training epoch wall time: {:.1f} s'.format(time.perf_counter() - epoch_start))
         self.print_log('\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(**proportion))
 
         if save_model:
@@ -443,11 +535,10 @@ class Processor():
             for batch_idx, (data, label, index) in enumerate(process):
                 label_list.append(label)
                 with torch.no_grad():
-                    data = data.float().cuda(self.output_device)
-                    label = label.long().cuda(self.output_device)
-                    output = self.model(data)
-                    loss = self.loss(output, label)
-                    score_frag.append(output.data.cpu().numpy())
+                    data = data.to(self.output_device, dtype=torch.float32, non_blocking=self.arg.fast)
+                    label = label.to(self.output_device, dtype=torch.long, non_blocking=self.arg.fast)
+                    output, loss = self.forward_loss(data, label)
+                    score_frag.append(output.detach().float().cpu().numpy())
                     loss_value.append(loss.data.item())
 
                     _, predict_label = torch.max(output.data, 1)
@@ -502,7 +593,9 @@ class Processor():
                 writer.writerows(confusion)
 
     def start(self):
-        if self.arg.phase == 'train':
+        if self.arg.phase == 'benchmark':
+            self.benchmark()
+        elif self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             def count_parameters(model):
@@ -517,7 +610,7 @@ class Processor():
                 self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
 
             # test the best model
-            weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'*'))[0]
+            weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'-*.pt'))[0]
             weights = torch.load(weights_path)
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
@@ -571,5 +664,11 @@ if __name__ == '__main__':
 
     arg = parser.parse_args()
     init_seed(arg.seed)
+    if arg.fast:
+        torch.set_num_threads(arg.cpu_threads)
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     processor = Processor(arg)
     processor.start()

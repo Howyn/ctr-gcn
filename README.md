@@ -106,6 +106,38 @@ python main.py --config config/ucla/default.yaml --work-dir work_dir/ucla/ctrgcn
 python main.py --config config/nturgbd120-cross-subject/default.yaml --model model.your_model.Model --work-dir work_dir/ntu120/csub/your_model --device 0
 ```
 
+### Optional runtime acceleration (PyTorch 2.5+)
+
+`config/nturgbd-cross-subject/fast.yaml` enables CUDA float16 AMP with gradient
+scaling, cuDNN tuning, TF32, pinned transfers and persistent data workers. It
+keeps the NTU60 X-Sub Joint model, batch size 64, learning rate and 65-epoch
+schedule. These runtime options change numerical behavior and determinism;
+record them when comparing experiments. The default config leaves them off.
+
+Before a full run, stop any other training process on the GPU and benchmark:
+
+```bash
+python main.py --config config/nturgbd-cross-subject/fast.yaml --phase benchmark --work-dir work_dir/ntu60/xsub/benchmark_fast64
+```
+
+The benchmark warms up 10 batches, then times 50 training and 50 test batches
+with CUDA synchronization at the timing boundaries. Its full-run projection
+includes per-epoch evaluation and a final test, but excludes startup, checkpoint
+and logging overhead. It is an estimate, not a runtime guarantee. No checkpoint
+is saved; start the actual experiment in a fresh process:
+
+```bash
+python main.py --config config/nturgbd-cross-subject/fast.yaml --device 0
+```
+
+Use a new work directory for each training run. If data workers fail due to
+shared-memory limits, reduce `--num-worker` (zero is also supported). Changing
+batch size or shortening training changes the experiment settings and must be
+reported separately from this runtime acceleration.
+
+See the PyTorch [AMP documentation](https://docs.pytorch.org/docs/stable/amp.html)
+and [performance tuning guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html).
+
 ### Testing
 
 - To test the trained models saved in <work_dir>, run the following command:
