@@ -144,6 +144,25 @@ are hardware-dependent and do not guarantee a two-hour runtime.
 See the PyTorch [AMP documentation](https://docs.pytorch.org/docs/stable/amp.html)
 and [performance tuning guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html).
 
+### AutoDL shutdown after an existing training run
+
+After starting the fast128 training command, attach a separate watcher to the
+training parent's PID (not a data worker). This does not restart training:
+
+```bash
+nohup python -u tools/autodl_shutdown.py --pid TRAINING_PID > logs/autodl_shutdown.log 2>&1 < /dev/null &
+```
+
+The watcher validates the PID/config, waits for that process to exit, and checks
+the 65-epoch completion summary, best/final checkpoints, final evaluation scores
+and logs. It copies the best checkpoint to `best.pt`, verifies its SHA-256, saves
+`training_console.log` and `result_summary.json` in the fast128 work directory,
+syncs the filesystem and invokes `/usr/bin/shutdown`, as documented by
+[AutoDL](https://www.autodl.com/docs/save_money/). If training or verification
+fails, it exits without shutting down; inspect `logs/autodl_shutdown.log`.
+`--dry-run` performs verification/saving but skips shutdown. Other runs can
+specify `--config`, `--work-dir`, `--training-log`, and `--expected-epochs`.
+
 ### Testing
 
 - To test the trained models saved in <work_dir>, run the following command:
