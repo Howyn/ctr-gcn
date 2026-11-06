@@ -1,0 +1,2 @@
+# Official CUDA dependency downloads are cached locally, not committed.
+.wheelhouse/

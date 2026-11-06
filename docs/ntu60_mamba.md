@@ -44,9 +44,27 @@ The installer targets Linux x86_64, the existing PyTorch 2.5.1 CUDA 12 build,
 and supported CPython versions. It detects the actual C++ ABI and installs the
 matching official release wheels for `mamba-ssm==2.2.4` and
 `causal-conv1d==1.5.0.post8`, with no PyTorch replacement and no local CUDA build.
-Runtime dependencies are listed in `requirements-mamba.txt`. If GitHub release
-downloads fail, retain the exact error and resolve network access; do not
-replace these modules with an unrelated pure-Python package.
+Runtime dependencies are listed in `requirements-mamba.txt`. Official wheels
+are downloaded into the ignored `.wheelhouse/` cache using resumable requests
+and retries. The installer checks response lengths, wheel metadata and every
+archive member's CRC before passing a local file to pip. It reuses verified
+cached files on later runs. If a proxy ignores Range requests, the file is
+restarted safely rather than appended twice. No third-party wheel mirror is used.
+
+If ordinary dependencies installed successfully but a GitHub wheel was truncated
+(for example, pip reports an invalid wheel before the full download completes),
+enable AutoDL's academic proxy in the current terminal and retry only the wheels:
+
+```bash
+source /etc/network_turbo
+python tools/install_mamba.py --skip-runtime-deps
+```
+
+Interrupted `.part` files remain available for the next retry. Fully downloaded
+but corrupt files are discarded and fetched again. If GitHub release downloads
+still fail, retain the exact error and resolve network access; do not replace
+these modules with an unrelated pure-Python package. AutoDL's proxy can slow
+ordinary pip mirrors, which is why this recovery command skips those dependencies.
 
 Installation ends by running `tools/check_mamba.py`: the actual hybrid model's
 CUDA forward, AMP backward, nonzero Mamba gradients and SGD update must pass.
