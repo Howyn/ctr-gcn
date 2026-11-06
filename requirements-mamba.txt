@@ -1,0 +1,8 @@
+# Additional runtime dependencies. Keep the existing PyTorch 2.5.1+cu124.
+# CUDA wheels are selected by tools/install_mamba.py, installed with --no-deps.
+numpy>=1.26,<2
+einops==0.8.1
+transformers==4.46.3
+packaging>=24,<26
+ninja>=1.11,<2
+triton==3.1.0; sys_platform == "linux"

@@ -307,7 +307,8 @@ class Model(nn.Module):
         else:
             self.drop_out = lambda x: x
 
-    def forward(self, x):
+    def forward_features(self, x):
+        """Return unpooled backbone features as (N, M, C, T, V)."""
         if len(x.shape) == 3:
             N, T, VC = x.shape
             x = x.view(N, T, self.num_point, -1).permute(0, 3, 1, 2).contiguous().unsqueeze(-1)
@@ -327,8 +328,12 @@ class Model(nn.Module):
         x = self.l9(x)
         x = self.l10(x)
 
+        return x.view(N, M, x.size(1), x.size(2), x.size(3))
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        N, M, c_new, _, _ = x.shape
         # N*M,C,T,V
-        c_new = x.size(1)
         x = x.view(N, M, c_new, -1)
         x = x.mean(3).mean(1)
         x = self.drop_out(x)

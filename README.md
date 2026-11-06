@@ -165,6 +165,10 @@ specify `--config`, `--work-dir`, `--training-log`, and `--expected-epochs`.
 
 ### Testing
 
+For the additional **CTR-GCN + standard Mamba-1** NTU60 X-Sub Joint experiment,
+see [installation, architecture, benchmark and training commands](docs/ntu60_mamba.md).
+Its training settings match `fast128.yaml`, and its results use a separate directory.
+
 - To test the trained models saved in <work_dir>, run the following command:
 
 ```
