@@ -1,8 +1,10 @@
 import importlib.util
+import errno
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location(
@@ -92,6 +94,54 @@ class ProcessIdentityTests(unittest.TestCase):
             stat.write_text('123 (python) ' + ' '.join(fields))
             self.assertIsNone(watcher.process_identity(123, root))
             self.assertIsNone(watcher.process_identity(456, root))
+
+
+class ShutdownInvocationTests(unittest.TestCase):
+    def test_shebangless_script_exec_format_error_uses_bash(self):
+        path = Path('/usr/bin/shutdown')
+        with patch.object(watcher.subprocess, 'run', side_effect=[
+                OSError(errno.ENOEXEC, 'Exec format error'),
+                watcher.subprocess.CompletedProcess([], 0)]) as run:
+            watcher.request_shutdown(path)
+        self.assertEqual(run.call_args_list[0].args[0], [str(path)])
+        self.assertEqual(run.call_args_list[1].args[0], ['/bin/bash', str(path)])
+
+    def test_native_success_is_not_executed_twice(self):
+        with patch.object(watcher.subprocess, 'run', return_value=watcher.subprocess.CompletedProcess([], 0)) as run:
+            watcher.request_shutdown(Path('/usr/bin/shutdown'))
+        self.assertEqual(run.call_count, 1)
+
+    def test_permission_errors_are_not_retried_as_a_format_problem(self):
+        with patch.object(watcher.subprocess, 'run', side_effect=PermissionError(errno.EACCES, 'denied')) as run:
+            with self.assertRaises(PermissionError):
+                watcher.request_shutdown(Path('/usr/bin/shutdown'))
+        self.assertEqual(run.call_count, 1)
+
+    def test_failed_shell_request_is_not_reported_as_success(self):
+        with patch.object(watcher.subprocess, 'run', side_effect=[
+                OSError(errno.ENOEXEC, 'Exec format error'),
+                watcher.subprocess.CalledProcessError(1, ['/bin/bash', '/usr/bin/shutdown'])]):
+            with self.assertRaises(watcher.subprocess.CalledProcessError):
+                watcher.request_shutdown(Path('/usr/bin/shutdown'))
+
+    def test_script_preflight_checks_syntax_without_running_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'shutdown'
+            script.write_text('echo provider shutdown request\n')
+            with patch.object(watcher.os, 'access', return_value=True), patch.object(
+                    watcher.subprocess, 'run', return_value=watcher.subprocess.CompletedProcess([], 0)) as run:
+                self.assertEqual(watcher.check_shutdown_command(script), 'bash-script-fallback')
+            self.assertEqual(run.call_args.args[0], ['/bin/bash', '-n', str(script)])
+
+    def test_check_only_cli_never_arms_or_requests_shutdown(self):
+        with patch.object(watcher.sys, 'argv', ['autodl_shutdown.py', '--check-shutdown']), \
+                patch.object(watcher.sys, 'platform', 'linux'), \
+                patch.object(watcher, 'check_shutdown_command', return_value='bash-script-fallback'), \
+                patch.object(watcher, 'validate_training_process') as validate, \
+                patch.object(watcher, 'request_shutdown') as request:
+            watcher.main()
+        validate.assert_not_called()
+        request.assert_not_called()
 
 
 if __name__ == '__main__':

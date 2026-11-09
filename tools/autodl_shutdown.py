@@ -6,6 +6,7 @@ or stopped here. Only the Python standard library is needed.
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import math
@@ -183,9 +184,40 @@ def persist_results(summary, work_dir, training_log):
     return output
 
 
+def check_shutdown_command(shutdown):
+    """Inspect format and shell syntax without executing a power-off request."""
+    shutdown = Path(shutdown)
+    if not shutdown.is_file() or not os.access(shutdown, os.X_OK):
+        raise ValueError('AutoDL shutdown file is missing or not executable: {}'.format(shutdown))
+    with shutdown.open('rb') as stream:
+        header = stream.read(4)
+    if not header:
+        raise ValueError('AutoDL shutdown file is empty.')
+    if header.startswith(b'#!') or header.startswith(b'\x7fELF'):
+        return 'native-exec-with-ENOEXEC-fallback'
+    # AutoDL can supply a shell script with no shebang. bash -n only parses it.
+    result = subprocess.run(['/bin/bash', '-n', str(shutdown)], capture_output=True)
+    if result.returncode != 0:
+        raise ValueError('Shutdown file is not native executable format and failed shell syntax checking.')
+    return 'bash-script-fallback'
+
+
+def request_shutdown(shutdown):
+    """Shell-compatible invocation for AutoDL's possibly shebang-less script."""
+    try:
+        return subprocess.run([str(shutdown)], check=True)
+    except OSError as error:
+        if error.errno != errno.ENOEXEC:
+            raise
+        print('Shutdown file returned ENOEXEC; retrying with /bin/bash interpreter.', flush=True)
+        return subprocess.run(['/bin/bash', str(shutdown)], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pid', type=int, required=True, help='PID of the running training parent')
+    parser.add_argument('--pid', type=int, help='PID of the running training parent')
+    parser.add_argument('--check-shutdown', action='store_true',
+                        help='inspect shutdown executable format/syntax without shutting down or watching a PID')
     parser.add_argument('--config', default='config/nturgbd-cross-subject/fast128.yaml')
     parser.add_argument('--work-dir', default='work_dir/ntu60/xsub/ctrgcn_joint_fast128')
     parser.add_argument('--training-log', default='logs/ntu60_xsub_joint_fast128.log')
@@ -195,15 +227,20 @@ def main():
     args = parser.parse_args()
     if not sys.platform.startswith('linux'):
         parser.error('This watcher must run inside the Linux AutoDL instance.')
-    if args.pid < 1 or args.expected_epochs < 1 or args.poll_seconds <= 0:
+    if args.check_shutdown:
+        mode = check_shutdown_command(Path('/usr/bin/shutdown'))
+        print('PASS: shutdown file format checked; mode: {}. No shutdown was requested.'.format(mode), flush=True)
+        return
+    if args.pid is None or args.pid < 1 or args.expected_epochs < 1 or args.poll_seconds <= 0:
         parser.error('PID, expected epochs and poll interval must be positive.')
     repository = Path(__file__).resolve().parents[1]
     config = (repository / args.config).resolve()
     work_dir = (repository / args.work_dir).resolve()
     training_log = (repository / args.training_log).resolve()
     shutdown = Path('/usr/bin/shutdown')
-    if not args.dry_run and not os.access(shutdown, os.X_OK):
-        raise ValueError('AutoDL /usr/bin/shutdown is unavailable; watcher not armed.')
+    if not args.dry_run:
+        mode = check_shutdown_command(shutdown)
+        print('Shutdown invocation preflight passed; mode:', mode, flush=True)
     identity = validate_training_process(args.pid, repository, config, work_dir)
     # Lock the exact result directory so duplicate watchers cannot race.
     import fcntl
@@ -226,7 +263,8 @@ def main():
             return
         print('Results are on disk. Requesting AutoDL shutdown.', flush=True)
         os.sync()
-        subprocess.run([str(shutdown)], check=True)
+        request_shutdown(shutdown)
+        print('Shutdown command returned success; power-off has been requested.', flush=True)
 
 
 if __name__ == '__main__':

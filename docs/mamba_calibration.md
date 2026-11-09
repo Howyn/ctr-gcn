@@ -69,6 +69,27 @@ the outcome whether or not it passes the threshold. No test-set sweep or search
 over multiple alternative recipes is launched by these commands. The model's
 compute graph is unchanged, but actual runtime still needs to be measured.
 
+### Repair an already-running watcher after an Exec format error
+
+Some AutoDL instances provide `/usr/bin/shutdown` as a shell script without a
+shebang. Direct Python execution then raises `ENOEXEC`, although running it from
+a shell works. The watcher now falls back to `/bin/bash /usr/bin/shutdown` only
+for this format error. Other command failures remain visible and are not treated
+as successful shutdowns.
+
+After pulling the fix, this command validates file format and shell syntax only;
+it does not execute shutdown or touch the running training process:
+
+```bash
+python tools/autodl_shutdown.py --check-shutdown
+```
+
+An already-running watcher keeps its old Python code in memory. Replace only
+that watcher after the format check passes; do not restart training. Use the
+actual training PID from its `Armed` log. The new watcher must again print `Armed`
+and a successful invocation preflight. The fallback is unit-tested locally;
+actual platform power-off must still be confirmed in the AutoDL console.
+
 ## Re-evaluate both scenes after training
 
 A new checkpoint requires a new clean/occluded evaluation; do not combine its

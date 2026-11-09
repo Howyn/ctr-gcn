@@ -162,6 +162,9 @@ syncs the filesystem and invokes `/usr/bin/shutdown`, as documented by
 fails, it exits without shutting down; inspect `logs/autodl_shutdown.log`.
 `--dry-run` performs verification/saving but skips shutdown. Other runs can
 specify `--config`, `--work-dir`, `--training-log`, and `--expected-epochs`.
+Use `--check-shutdown` to inspect command format and shell syntax without
+requesting shutdown. AutoDL scripts that raise `Exec format error` on direct
+execution are retried with `/bin/bash`; this does not hide other failures.
 
 ### Testing
 
