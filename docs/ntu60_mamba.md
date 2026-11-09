@@ -74,6 +74,25 @@ The script can be rerun independently:
 python tools/check_mamba.py
 ```
 
+AMP smoke checks allow bounded loss-scale calibration: initial invalid gradients
+cause GradScaler to skip the update and reduce its scale, as in training. The
+check requires two finite SGD updates, finite parameters and a nonzero gradient
+and actual weight change in Mamba. It prints the first invalid gradient names
+on overflow. Repeated overflows or non-finite forward values still fail; they
+are not silently accepted. The disposable smoke updates use the first warmup
+epoch's LR 0.02; this does not change the training config.
+
+If AMP cannot pass, use a separate full-precision diagnostic run:
+
+```bash
+python tools/check_mamba.py --precision fp32
+```
+
+FP32 passing is diagnostic information, not approval of the AMP training path.
+The official CUDA checks still have to pass in the intended precision before
+benchmarking. The original training architecture, optimizer and AMP scaler
+defaults are unchanged by these smoke-check diagnostics.
+
 ## Benchmark before the full run
 
 ```bash
