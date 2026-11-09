@@ -169,6 +169,9 @@ For the additional **CTR-GCN + standard Mamba-1** NTU60 X-Sub Joint experiment,
 see [installation, architecture, benchmark and training commands](docs/ntu60_mamba.md).
 Its training settings match `fast128.yaml`, and its results use a separate directory.
 
+For paired clean versus **20% missing-joint inference** with those trained models,
+see the [fixed occlusion protocol and evaluation commands](docs/occlusion20.md).
+
 - To test the trained models saved in <work_dir>, run the following command:
 
 ```
