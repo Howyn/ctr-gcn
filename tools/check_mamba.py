@@ -77,6 +77,8 @@ def main():
     parser.add_argument('--precision', choices=('amp', 'fp32'), default='amp')
     parser.add_argument('--init-scale', type=float, default=65536.0)
     parser.add_argument('--max-attempts', type=int, default=20)
+    parser.add_argument('--respect-no-weight-decay', action='store_true',
+                        help='smoke-test the calibrated optimizer grouping')
     args = parser.parse_args()
     if not math.isfinite(args.init_scale) or args.init_scale <= 0 or args.max_attempts < 2:
         parser.error('Initial scale must be positive and finite; max attempts must be at least 2.')
@@ -86,6 +88,7 @@ def main():
     import mamba_ssm
     import causal_conv1d
     from model.ctrgcn_mamba import Model
+    from model.optimizer import optimizer_parameters
 
     if not torch.cuda.is_available():
         raise SystemExit('A CUDA GPU is required for the official Mamba kernels.')
@@ -98,7 +101,9 @@ def main():
                   graph='graph.ntu_rgb_d.Graph', graph_args={'labeling_mode': 'spatial'}).cuda()
     model.train()
     # Use the first warmup epoch's actual LR (0.1 / 5) for these disposable updates.
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.02, momentum=0.9, nesterov=True,
+    parameters, exempt_names = optimizer_parameters(model, 0.0004, args.respect_no_weight_decay)
+    print('No-weight-decay parameters:', exempt_names, flush=True)
+    optimizer = torch.optim.SGD(parameters, lr=0.02, momentum=0.9, nesterov=True,
                                 weight_decay=0.0004)
     amp = args.precision == 'amp'
     scaler = torch.amp.GradScaler('cuda', init_scale=args.init_scale, enabled=amp)

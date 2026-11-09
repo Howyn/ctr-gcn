@@ -26,6 +26,7 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from torchlight import DictAction
+from model.optimizer import optimizer_parameters
 
 
 import resource
@@ -203,6 +204,8 @@ def get_parser():
         default=0.1,
         help='decay rate for learning rate')
     parser.add_argument('--warm_up_epoch', type=int, default=0)
+    parser.add_argument('--respect-no-weight-decay', type=str2bool, default=False,
+                        help='honor upstream parameter _no_weight_decay markers (Mamba A_log/D)')
     parser.add_argument('--amp', type=str2bool, default=False,
                         help='use CUDA float16 automatic mixed precision')
     parser.add_argument('--fast', type=str2bool, default=False,
@@ -400,16 +403,20 @@ class Processor():
                 self.model.load_state_dict(state)
 
     def load_optimizer(self):
+        parameters, exempt_names = optimizer_parameters(
+            self.model, self.arg.weight_decay, self.arg.respect_no_weight_decay)
+        if self.arg.respect_no_weight_decay:
+            self.print_log('No-weight-decay parameters: {}'.format(exempt_names))
         if self.arg.optimizer == 'SGD':
             self.optimizer = optim.SGD(
-                self.model.parameters(),
+                parameters,
                 lr=self.arg.base_lr,
                 momentum=0.9,
                 nesterov=self.arg.nesterov,
                 weight_decay=self.arg.weight_decay)
         elif self.arg.optimizer == 'Adam':
             self.optimizer = optim.Adam(
-                self.model.parameters(),
+                parameters,
                 lr=self.arg.base_lr,
                 weight_decay=self.arg.weight_decay)
         else:

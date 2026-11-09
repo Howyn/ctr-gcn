@@ -28,6 +28,11 @@ Use seed 1 and train from scratch; do not initialize from the completed baseline
 checkpoint. Original SGD parameter grouping is retained for a controlled
 comparison. Added Mamba parameters receive the same optimizer settings.
 
+After the first run, a separate controlled recipe-calibration trial was added
+to honor official Mamba no-weight-decay parameter tags. See
+[the correction, unchanged settings and commands](mamba_calibration.md).
+The original preset remains unchanged; the new opt-in flag defaults to false.
+
 Outputs go to `work_dir/ntu60/xsub/ctrgcn_mamba_joint_fast128`, separately from
 the 89.64% baseline. Record accuracy and actual runtime; neither an improvement
 nor a two-hour runtime can be assumed from the baseline alone.

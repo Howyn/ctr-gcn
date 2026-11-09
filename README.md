@@ -168,6 +168,8 @@ specify `--config`, `--work-dir`, `--training-log`, and `--expected-epochs`.
 For the additional **CTR-GCN + standard Mamba-1** NTU60 X-Sub Joint experiment,
 see [installation, architecture, benchmark and training commands](docs/ntu60_mamba.md).
 Its training settings match `fast128.yaml`, and its results use a separate directory.
+The [standard-Mamba calibration trial](docs/mamba_calibration.md) optionally honors
+the official state-parameter no-weight-decay markers without changing the model.
 
 For paired clean versus **20% missing-joint inference** with those trained models,
 see the [fixed occlusion protocol and evaluation commands](docs/occlusion20.md).
