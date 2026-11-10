@@ -48,6 +48,23 @@ class MaskTests(unittest.TestCase):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_standard_reference_and_improved_candidate_configs_are_supported(self):
+        root = Path(__file__).resolve().parents[1] / 'config' / 'nturgbd-cross-subject'
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / 'standard'
+            candidate = Path(directory) / 'improved'
+            reference.mkdir()
+            candidate.mkdir()
+            (reference / 'config.yaml').write_text((root / 'ctrgcn_mamba_fast128.yaml').read_text())
+            (candidate / 'config.yaml').write_text((root / 'ctrgcn_mamba_robust_fast128.yaml').read_text())
+            configs = dict(baseline=evaluation.read_config(reference, ('model.ctrgcn.Model',
+                                                                       'model.ctrgcn_mamba.Model')),
+                           mamba=evaluation.read_config(candidate, ('model.ctrgcn_mamba.Model',
+                                                                    'model.ctrgcn_mamba_robust.Model')))
+            self.assertEqual(evaluation.matching_test_settings(configs)['split'], 'test')
+            with self.assertRaisesRegex(ValueError, 'Wrong model'):
+                evaluation.read_config(candidate, 'model.ctrgcn_mamba.Model')
+
     def test_best_epoch_selection_does_not_use_last_epoch_or_a_prefix_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

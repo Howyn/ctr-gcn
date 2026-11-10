@@ -1,0 +1,2 @@
+# AutoDL launches this with bash; preserve LF even from the Windows workspace.
+tools/*.sh text eol=lf

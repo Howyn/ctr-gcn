@@ -63,7 +63,8 @@ def read_config(work_dir, expected_model):
     if not path.is_file():
         raise FileNotFoundError('Saved training config is missing: {}'.format(path))
     config = yaml.safe_load(path.read_text(encoding='utf-8'))
-    if config['model'] != expected_model:
+    allowed = (expected_model,) if isinstance(expected_model, str) else expected_model
+    if config['model'] not in allowed:
         raise ValueError('Wrong model in {}: {}'.format(path, config['model']))
     if config['feeder'] != 'feeders.feeder_ntu.Feeder':
         raise ValueError('This evaluation requires the NTU feeder.')
@@ -175,8 +176,10 @@ def main():
         parser.error('Batch size must be positive; worker count must be nonnegative.')
     make_joint_masks(1, rate=args.rate, seed=args.mask_seed)
     work_dirs = dict(baseline=(ROOT / args.baseline_dir).resolve(), mamba=(ROOT / args.mamba_dir).resolve())
-    configs = {name: read_config(directory, 'model.ctrgcn.Model' if name == 'baseline'
-                                 else 'model.ctrgcn_mamba.Model') for name, directory in work_dirs.items()}
+    configs = {name: read_config(directory, ('model.ctrgcn.Model', 'model.ctrgcn_mamba.Model')
+                                 if name == 'baseline' else ('model.ctrgcn_mamba.Model',
+                                                            'model.ctrgcn_mamba_robust.Model'))
+               for name, directory in work_dirs.items()}
     feeder_args = matching_test_settings(configs)
     data_path = Path(feeder_args['data_path'])
     if not data_path.is_file():
@@ -187,6 +190,7 @@ def main():
         path, epoch, reference = best_checkpoint(directory, ROOT / override if override else None)
         provenance[name] = dict(checkpoint=str(path), best_epoch=epoch,
                                 training_best_top1_percent=reference,
+                                model=configs[name]['model'], model_args=configs[name]['model_args'],
                                 saved_config=str(directory / 'config.yaml'))
         print('{}: best epoch {}, reference {}, checkpoint {}'.format(name, epoch, reference, path), flush=True)
     print('Dataset:', data_path, flush=True)

@@ -177,6 +177,11 @@ the official state-parameter no-weight-decay markers without changing the model.
 For paired clean versus **20% missing-joint inference** with those trained models,
 see the [fixed occlusion protocol and evaluation commands](docs/occlusion20.md).
 
+For the new **reliability-controlled Mamba state writes + local temporal residual**,
+see [algorithm, parameter budget, CUDA checks, training and AutoDL shutdown](docs/ntu60_robust_mamba.md).
+Its two modules have independent switches and add 25,474 parameters. The first
+trial keeps the original standard hybrid's clean-only training recipe.
+
 - To test the trained models saved in <work_dir>, run the following command:
 
 ```
