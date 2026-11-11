@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 case "${1:-v1}" in
   v1) EXPERIMENT=robust ;;
   v2) EXPERIMENT=robust_v2 ;;
-  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2]' >&2; exit 1 ;;
+  v2-clean) EXPERIMENT=robust_v2_clean ;;
+  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2|v2-clean]' >&2; exit 1 ;;
 esac
 CONFIG="config/nturgbd-cross-subject/ctrgcn_mamba_${EXPERIMENT}_fast128.yaml"
 WORK="work_dir/ntu60/xsub/ctrgcn_mamba_${EXPERIMENT}_joint_fast128"
@@ -18,6 +19,10 @@ if [[ -e "$WORK" || -e "$TRAIN_LOG" || -e "$WATCH_LOG" ]]; then
 fi
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 mkdir -p logs
+if [[ "$EXPERIMENT" == robust_v2_clean ]]; then
+  # Compare with the actual completed baseline before spending GPU training time.
+  python tools/check_clean_comparison.py --candidate "$CONFIG"
+fi
 # Preflight only: this does not request shutdown.
 python tools/autodl_shutdown.py --check-shutdown
 python -c 'import numpy as np, torch, mamba_ssm, causal_conv1d; assert torch.cuda.is_available(); assert np.array_equal(torch.from_numpy(np.arange(3)).numpy(), np.arange(3)); print("Python/CUDA/NumPy/Mamba imports passed")'
