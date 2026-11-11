@@ -37,6 +37,24 @@ tail -f logs/ntu60_xsub_joint_mamba_robust_v2_clean.log
 关机监控应显示 `Armed: waiting for training PID ...`。最终保存/校验失败会
 保持开机并记录原因，不会把失败实验当成成功结果。
 
+### 更换实例后训练缺包或导入失败
+
+推理环境能运行 Mamba 不代表 main.py 的 sklearn / tensorboardX / torchlight
+等训练入口依赖齐全。启动器现在先执行 main.py --help 和 NTU feeder 导入，
+通过后才创建训练和关机监控进程。安装训练依赖时保持 NumPy=1.26.4，不安装
+旧 requirements.txt，也不更换 PyTorch/CUDA：
+
+```bash
+python -m pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple
+python -m pip install --no-deps --no-build-isolation -e ./torchlight
+bash tools/train_robust_autodl.sh v2-clean --retry-startup
+```
+
+--retry-startup 只处理有明确 ModuleNotFoundError、未出现 Training epoch、
+且实验目录仅含监控锁的失败尝试。旧日志/锁目录会移到 logs/failed_startups，
+不删除；仍有训练进程或工作目录含配置/权重等其他文件时拒绝归档或重启。
+它会等待旧关机监控释放锁，最多 20 秒；不能用于恢复已开始的训练。
+
 ## 训练完成后只做原来的干净 / 20% 双场景推理
 
 重新 GPU 开机、激活同一虚拟环境后运行：

@@ -19,6 +19,8 @@ import sys
 import tempfile
 import time
 
+WATCH_LOCK_NAME = 'shutdown_watch.lock'
+
 
 def process_identity(pid, proc_root=Path('/proc')):
     """Return the kernel start time, treating exited/zombie processes as gone."""
@@ -245,7 +247,7 @@ def main():
     # Lock the exact result directory so duplicate watchers cannot race.
     import fcntl
     work_dir.mkdir(parents=True, exist_ok=True)
-    with (work_dir / 'shutdown_watch.lock').open('a') as lock:
+    with (work_dir / WATCH_LOCK_NAME).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         print('Armed: waiting for training PID {} (start {}), results: {}'.format(
             args.pid, identity, work_dir), flush=True)

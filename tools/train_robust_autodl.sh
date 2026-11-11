@@ -7,13 +7,20 @@ case "${1:-v1}" in
   v1) EXPERIMENT=robust ;;
   v2) EXPERIMENT=robust_v2 ;;
   v2-clean) EXPERIMENT=robust_v2_clean ;;
-  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2|v2-clean]' >&2; exit 1 ;;
+  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2|v2-clean] [--retry-startup]' >&2; exit 1 ;;
 esac
+RETRY_STARTUP=0
+if [[ "${2:-}" == --retry-startup && "$#" == 2 ]]; then
+  RETRY_STARTUP=1
+elif [[ "$#" -gt 1 ]]; then
+  echo 'Only --retry-startup is supported as a second argument.' >&2
+  exit 1
+fi
 CONFIG="config/nturgbd-cross-subject/ctrgcn_mamba_${EXPERIMENT}_fast128.yaml"
 WORK="work_dir/ntu60/xsub/ctrgcn_mamba_${EXPERIMENT}_joint_fast128"
 TRAIN_LOG="logs/ntu60_xsub_joint_mamba_${EXPERIMENT}.log"
 WATCH_LOG="logs/autodl_shutdown_mamba_${EXPERIMENT}.log"
-if [[ -e "$WORK" || -e "$TRAIN_LOG" || -e "$WATCH_LOG" ]]; then
+if [[ "$RETRY_STARTUP" == 0 && ( -e "$WORK" || -e "$TRAIN_LOG" || -e "$WATCH_LOG" ) ]]; then
   echo 'Refusing to overwrite an existing robust run/log. Inspect or archive it first.' >&2
   exit 1
 fi
@@ -26,6 +33,14 @@ fi
 # Preflight only: this does not request shutdown.
 python tools/autodl_shutdown.py --check-shutdown
 python -c 'import numpy as np, torch, mamba_ssm, causal_conv1d; assert torch.cuda.is_available(); assert np.array_equal(torch.from_numpy(np.arange(3)).numpy(), np.arange(3)); print("Python/CUDA/NumPy/Mamba imports passed")'
+# --help exits before config loading/Processor creation, but imports every
+# main.py dependency. Fail here rather than start a dead training/watch pair.
+python main.py --help > /dev/null
+python -c 'from feeders.feeder_ntu import Feeder; print("Training entry point and NTU feeder imports passed")'
+if [[ "$RETRY_STARTUP" == 1 ]]; then
+  python tools/archive_failed_start.py --work-dir "$WORK" \
+    --training-log "$TRAIN_LOG" --watcher-log "$WATCH_LOG"
+fi
 
 nohup python -u main.py --config "$CONFIG" --device 0 --seed 1 \
   > "$TRAIN_LOG" 2>&1 < /dev/null &

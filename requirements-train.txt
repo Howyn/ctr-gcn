@@ -1,0 +1,9 @@
+# Training entry-point dependencies; keep the working NumPy/PyTorch/CUDA stack.
+# Do not use the upstream requirements.txt (it targets an old Python/Torch stack).
+numpy==1.26.4
+scikit-learn==1.5.2
+tensorboardX==2.6.2.2
+h5py>=3.10,<4
+matplotlib>=3.8,<4
+PyYAML>=6,<7
+tqdm>=4.66,<5
