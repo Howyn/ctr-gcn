@@ -53,6 +53,8 @@
 一次样本仍只做一次前向和一次交叉熵，没有双分支教师网络或两倍训练计算。
 
 `joint_mask_prob` 默认 0，不消耗额外随机数，旧训练流程保持原样；
+增强同时支持裁剪后的 NumPy 数组和随机旋转返回的 Tensor，保持输入类型、
+dtype/device，并只在需要遮挡时复制数据，不修改缓存样本。
 对 test split 或 Bone/Motion 启用此增强会直接报错。测试遮挡仍由现有
 evaluate_occlusion.py 生成，完全不变。
 
