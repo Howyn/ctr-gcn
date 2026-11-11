@@ -181,6 +181,10 @@ For the new **reliability-controlled Mamba state writes + local temporal residua
 see [algorithm, parameter budget, CUDA checks, training and AutoDL shutdown](docs/ntu60_robust_mamba.md).
 Its two modules have independent switches and add 25,474 parameters. The first
 trial keeps the original standard hybrid's clean-only training recipe.
+The [V2 follow-up](docs/ntu60_robust_mamba_v2.md) preserves the direct Mamba path,
+blends local history into uncertain state writes, and adds limited training
+joint masking. It adds 26,242 parameters and has a separate result directory.
+Its matched-augmentation standard-model control is provided but not auto-launched.
 
 - To test the trained models saved in <work_dir>, run the following command:
 

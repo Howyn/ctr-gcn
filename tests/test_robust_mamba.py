@@ -32,8 +32,10 @@ def reference_scan(u, delta, A, B, C, D, z, delta_bias, delta_softplus):
         decay = torch.exp(dt[:, :, t, None] * A[None, :, :])
         write = dt[:, :, t, None] * B[:, None, :, t] * u[:, :, t, None]
         state = decay * state + write
-        output.append((state * C[:, None, :, t]).sum(-1) + D[None, :] * u[:, :, t])
-    return torch.stack(output, dim=-1) * F.silu(z)
+        value = (state * C[:, None, :, t]).sum(-1)
+        output.append(value if D is None else value + D[None, :] * u[:, :, t])
+    result = torch.stack(output, dim=-1)
+    return result if z is None else result * F.silu(z)
 
 
 def reference_conv(x, weight, bias, activation):

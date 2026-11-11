@@ -3,12 +3,13 @@ import numpy as np
 from torch.utils.data import Dataset
 
 from feeders import tools
+from feeders.joint_mask import mask_training_joints
 
 
 class Feeder(Dataset):
     def __init__(self, data_path, label_path=None, p_interval=1, split='train', random_choose=False, random_shift=False,
                  random_move=False, random_rot=False, window_size=-1, normalization=False, debug=False, use_mmap=False,
-                 bone=False, vel=False):
+                 bone=False, vel=False, joint_mask_prob=0.0, joint_mask_max=5):
         """
         :param data_path:
         :param label_path:
@@ -26,6 +27,12 @@ class Feeder(Dataset):
         :param only_label: only load label for ensemble score compute
         """
 
+        if not 0 <= joint_mask_prob <= 1 or not 1 <= joint_mask_max <= 25:
+            raise ValueError('Invalid training joint-mask settings.')
+        if joint_mask_prob > 0 and (split != 'train' or bone or vel):
+            raise ValueError('Joint masking augmentation is supported only for Joint training.')
+        self.joint_mask_prob = joint_mask_prob
+        self.joint_mask_max = joint_mask_max
         self.debug = debug
         self.data_path = data_path
         self.label_path = label_path
@@ -91,6 +98,8 @@ class Feeder(Dataset):
             data_numpy[:, :-1] = data_numpy[:, 1:] - data_numpy[:, :-1]
             data_numpy[:, -1] = 0
 
+        if self.joint_mask_prob > 0:
+            data_numpy = mask_training_joints(data_numpy, self.joint_mask_prob, self.joint_mask_max)
         return data_numpy, label, index
 
     def top_k(self, score, top_k):

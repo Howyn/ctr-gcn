@@ -1,0 +1,59 @@
+# Optional matched-training control; not launched by the V2 training script.
+work_dir: ./work_dir/ntu60/xsub/ctrgcn_mamba_maskaug_joint_fast128
+
+feeder: feeders.feeder_ntu.Feeder
+train_feeder_args:
+  data_path: data/ntu/NTU60_CS.npz
+  split: train
+  debug: False
+  random_choose: False
+  random_shift: False
+  random_move: False
+  window_size: 64
+  normalization: False
+  random_rot: True
+  p_interval: [0.5, 1]
+  vel: False
+  bone: False
+  joint_mask_prob: 0.25
+  joint_mask_max: 5
+
+test_feeder_args:
+  data_path: data/ntu/NTU60_CS.npz
+  split: test
+  window_size: 64
+  p_interval: [0.95]
+  vel: False
+  bone: False
+  debug: False
+
+model: model.ctrgcn_mamba.Model
+model_args:
+  num_class: 60
+  num_point: 25
+  num_person: 2
+  graph: graph.ntu_rgb_d.Graph
+  graph_args:
+    labeling_mode: spatial
+  mamba_d_state: 16
+  mamba_d_conv: 4
+  mamba_expand: 2
+
+weight_decay: 0.0004
+base_lr: 0.1
+lr_decay_rate: 0.1
+step: [35, 55]
+warm_up_epoch: 5
+
+device: [0]
+batch_size: 128
+test_batch_size: 128
+num_epoch: 65
+nesterov: True
+num_worker: 2
+save_epoch: 0
+amp: True
+fast: True
+cpu_threads: 1
+benchmark_batches: 50
+benchmark_warmup: 10

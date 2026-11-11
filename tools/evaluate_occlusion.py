@@ -72,7 +72,8 @@ def read_config(work_dir, expected_model):
     if feeder.get('split') != 'test' or feeder.get('bone', False) or feeder.get('vel', False):
         raise ValueError('Evaluation must use the Joint test split.')
     if feeder.get('debug', False) or any(feeder.get(key, False) for key in
-                                      ('random_choose', 'random_shift', 'random_move', 'random_rot')):
+                                      ('random_choose', 'random_shift', 'random_move', 'random_rot',
+                                       'joint_mask_prob')):
         raise ValueError('Debug mode or random test augmentation is not allowed.')
     if (config['model_args']['num_point'] != 25 or config['model_args']['num_class'] != 60
             or config['model_args']['num_person'] != 2):
@@ -91,6 +92,18 @@ def matching_test_settings(configs):
         if configs['baseline'].get(key, False) != configs['mamba'].get(key, False):
             raise ValueError('Both saved configs must use the same {} setting.'.format(key))
     return reference
+
+
+def matching_training_inputs(configs):
+    """Report augmentation differences rather than attribute them to architecture."""
+    settings = []
+    for config in configs.values():
+        arguments = dict(config['train_feeder_args'])
+        arguments.setdefault('joint_mask_prob', 0.0)
+        arguments.setdefault('joint_mask_max', 5)
+        arguments['data_path'] = str((ROOT / arguments['data_path']).resolve())
+        settings.append(arguments)
+    return all(arguments == settings[0] for arguments in settings[1:])
 
 
 def make_joint_masks(count, num_joints=25, rate=0.2, seed=2026):
@@ -178,9 +191,14 @@ def main():
     work_dirs = dict(baseline=(ROOT / args.baseline_dir).resolve(), mamba=(ROOT / args.mamba_dir).resolve())
     configs = {name: read_config(directory, ('model.ctrgcn.Model', 'model.ctrgcn_mamba.Model')
                                  if name == 'baseline' else ('model.ctrgcn_mamba.Model',
-                                                            'model.ctrgcn_mamba_robust.Model'))
+                                                            'model.ctrgcn_mamba_robust.Model',
+                                                            'model.ctrgcn_mamba_robust_v2.Model'))
                for name, directory in work_dirs.items()}
     feeder_args = matching_test_settings(configs)
+    same_training_inputs = matching_training_inputs(configs)
+    if not same_training_inputs:
+        print('NOTE: training input/augmentation settings differ; this comparison includes '
+              'training-recipe changes and cannot isolate the architecture effect.', flush=True)
     data_path = Path(feeder_args['data_path'])
     if not data_path.is_file():
         raise FileNotFoundError('Prepared dataset is missing: {}'.format(data_path))
@@ -191,6 +209,7 @@ def main():
         provenance[name] = dict(checkpoint=str(path), best_epoch=epoch,
                                 training_best_top1_percent=reference,
                                 model=configs[name]['model'], model_args=configs[name]['model_args'],
+                                train_feeder_args=configs[name]['train_feeder_args'],
                                 saved_config=str(directory / 'config.yaml'))
         print('{}: best epoch {}, reference {}, checkpoint {}'.format(name, epoch, reference, path), flush=True)
     print('Dataset:', data_path, flush=True)
@@ -281,6 +300,7 @@ def main():
                    samples=len(labels), data_path=str(data_path),
                    data_size_bytes=data_path.stat().st_size,
                    test_feeder_args=feeder_args,
+                   same_training_feeder_args=same_training_inputs,
                    batch_size=args.batch_size, amp=amp, fast=fast,
                    gpu=torch.cuda.get_device_name(device), pytorch=torch.__version__, numpy=np.__version__,
                    git_commit=revision.stdout.strip(), elapsed_seconds=elapsed,

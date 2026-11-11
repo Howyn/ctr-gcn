@@ -3,10 +3,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONFIG=config/nturgbd-cross-subject/ctrgcn_mamba_robust_fast128.yaml
-WORK=work_dir/ntu60/xsub/ctrgcn_mamba_robust_joint_fast128
-TRAIN_LOG=logs/ntu60_xsub_joint_mamba_robust.log
-WATCH_LOG=logs/autodl_shutdown_mamba_robust.log
+case "${1:-v1}" in
+  v1) EXPERIMENT=robust ;;
+  v2) EXPERIMENT=robust_v2 ;;
+  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2]' >&2; exit 1 ;;
+esac
+CONFIG="config/nturgbd-cross-subject/ctrgcn_mamba_${EXPERIMENT}_fast128.yaml"
+WORK="work_dir/ntu60/xsub/ctrgcn_mamba_${EXPERIMENT}_joint_fast128"
+TRAIN_LOG="logs/ntu60_xsub_joint_mamba_${EXPERIMENT}.log"
+WATCH_LOG="logs/autodl_shutdown_mamba_${EXPERIMENT}.log"
 if [[ -e "$WORK" || -e "$TRAIN_LOG" || -e "$WATCH_LOG" ]]; then
   echo 'Refusing to overwrite an existing robust run/log. Inspect or archive it first.' >&2
   exit 1

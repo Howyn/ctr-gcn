@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from copy import deepcopy
 import tempfile
 import unittest
 
@@ -48,6 +49,19 @@ class MaskTests(unittest.TestCase):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_v2_recipe_difference_is_reported_and_matched_control_is_equal(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1] / 'config/nturgbd-cross-subject'
+        standard = yaml.safe_load((root / 'ctrgcn_mamba_fast128.yaml').read_text())
+        improved = yaml.safe_load((root / 'ctrgcn_mamba_robust_v2_fast128.yaml').read_text())
+        self.assertFalse(evaluation.matching_training_inputs(dict(baseline=standard, mamba=improved)))
+        control = deepcopy(standard)
+        control['train_feeder_args'].update(joint_mask_prob=0.25, joint_mask_max=5)
+        self.assertTrue(evaluation.matching_training_inputs(dict(baseline=control, mamba=improved)))
+        explicit_defaults = deepcopy(standard)
+        explicit_defaults['train_feeder_args'].update(joint_mask_prob=0, joint_mask_max=5)
+        self.assertTrue(evaluation.matching_training_inputs(dict(baseline=standard, mamba=explicit_defaults)))
+
     def test_standard_reference_and_improved_candidate_configs_are_supported(self):
         root = Path(__file__).resolve().parents[1] / 'config' / 'nturgbd-cross-subject'
         with tempfile.TemporaryDirectory() as directory:
