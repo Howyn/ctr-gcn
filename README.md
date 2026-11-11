@@ -185,6 +185,8 @@ The [V2 follow-up](docs/ntu60_robust_mamba_v2.md) preserves the direct Mamba pat
 blends local history into uncertain state writes, and adds limited training
 joint masking. It adds 26,242 parameters and has a separate result directory.
 Its matched-augmentation standard-model control is provided but not auto-launched.
+For unexpectedly large occlusion gains, see the [read-only result and input audit](docs/occlusion_audit.md).
+It checks saved metrics and masks, live branch inputs and clean-pass cache independence.
 
 - To test the trained models saved in <work_dir>, run the following command:
 
