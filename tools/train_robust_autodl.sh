@@ -7,7 +7,8 @@ case "${1:-v1}" in
   v1) EXPERIMENT=robust ;;
   v2) EXPERIMENT=robust_v2 ;;
   v2-clean) EXPERIMENT=robust_v2_clean ;;
-  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2|v2-clean] [--retry-startup]' >&2; exit 1 ;;
+  v3|v3-clean) EXPERIMENT=robust_v3_clean ;;
+  *) echo 'Usage: bash tools/train_robust_autodl.sh [v1|v2|v2-clean|v3] [--retry-startup]' >&2; exit 1 ;;
 esac
 RETRY_STARTUP=0
 if [[ "${2:-}" == --retry-startup && "$#" == 2 ]]; then
@@ -26,7 +27,7 @@ if [[ "$RETRY_STARTUP" == 0 && ( -e "$WORK" || -e "$TRAIN_LOG" || -e "$WATCH_LOG
 fi
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 mkdir -p logs
-if [[ "$EXPERIMENT" == robust_v2_clean ]]; then
+if [[ "$EXPERIMENT" == robust_v2_clean || "$EXPERIMENT" == robust_v3_clean ]]; then
   # Compare with the actual completed baseline before spending GPU training time.
   python tools/check_clean_comparison.py --candidate "$CONFIG"
 fi

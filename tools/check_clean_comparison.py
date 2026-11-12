@@ -1,4 +1,4 @@
-"""Validate the no-added-occlusion V2 run against the actual saved standard run."""
+"""Validate clean-training V2/V3 against the actual saved standard run."""
 
 import argparse
 from copy import deepcopy
@@ -24,8 +24,15 @@ def input_settings(arguments):
 def check_comparison(reference, candidate):
     if reference['model'] != 'model.ctrgcn_mamba.Model':
         raise ValueError('Reference must be the completed original standard Mamba run.')
-    if candidate['model'] != 'model.ctrgcn_mamba_robust_v2.Model':
-        raise ValueError('Candidate must use the unchanged V2 architecture.')
+    variants = {
+        'model.ctrgcn_mamba_robust_v2.Model': dict(use_reliability=True, use_local_compensation=True,
+                                                history_window=3),
+        'model.ctrgcn_mamba_robust_v3.Model': dict(use_visibility_pooling=True, use_reliability=True,
+                                                use_local_compensation=True, use_history_compensation=True,
+                                                history_window=3),
+    }
+    if candidate['model'] not in variants:
+        raise ValueError('Candidate must use the declared V2 or V3 architecture.')
     if reference['feeder'] != candidate['feeder']:
         raise ValueError('Feeder differs from original standard run.')
     for key, split in (('train_feeder_args', 'train'), ('test_feeder_args', 'test')):
@@ -46,10 +53,10 @@ def check_comparison(reference, candidate):
     if candidate.get('phase', 'train') != 'train':
         raise ValueError('Candidate phase must be train.')
     shared = dict(candidate['model_args'])
-    expected_extra = dict(use_reliability=True, use_local_compensation=True, history_window=3)
+    expected_extra = variants[candidate['model']]
     for key, expected in expected_extra.items():
         if shared.pop(key, None) != expected:
-            raise ValueError('V2 model setting changed: ' + key)
+            raise ValueError('Declared improved-model setting changed: ' + key)
     if shared != reference['model_args']:
         raise ValueError('Shared backbone/Mamba model arguments differ.')
     if (ROOT / candidate['work_dir']).resolve() == (ROOT / reference['work_dir']).resolve():
@@ -69,7 +76,7 @@ def main():
     print('PASS: compared against the original run\'s saved config: {}'.format(args.reference))
     print('Training joint-mask probability: 0.0; original rotation/cropping unchanged.')
     print('Same data, test preprocessing, optimizer, LR schedule, epochs, batch sizes and seed.')
-    print('Train V2 from scratch; work directory: {}'.format(candidate['work_dir']))
+    print('Train {} from scratch; work directory: {}'.format(candidate['model'], candidate['work_dir']))
 
 
 if __name__ == '__main__':

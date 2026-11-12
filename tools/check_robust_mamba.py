@@ -8,14 +8,17 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--precision', choices=('amp', 'fp32'), default='amp')
-    parser.add_argument('--variant', choices=('v1', 'v2'), default='v1')
+    parser.add_argument('--variant', choices=('v1', 'v2', 'v3'), default='v1')
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import numpy as np
     import torch
     import mamba_ssm
     import causal_conv1d
-    if args.variant == 'v2':
+    if args.variant == 'v3':
+        from model.ctrgcn_mamba_robust_v3 import Model
+        from model.ctrgcn_mamba_robust_v2 import reliable_mamba
+    elif args.variant == 'v2':
         from model.ctrgcn_mamba_robust_v2 import Model, reliable_mamba
     else:
         from model.ctrgcn_mamba_robust import Model, reliable_mamba
@@ -36,7 +39,7 @@ def main():
                   graph='graph.ntu_rgb_d.Graph', graph_args={'labeling_mode': 'spatial'}).cuda()
     print('Parameters:', sum(parameter.numel() for parameter in model.parameters()),
           'extra:', model.extra_parameters, 'budget: 200000', flush=True)
-    if model.extra_parameters != (26242 if args.variant == 'v2' else 25474):
+    if model.extra_parameters != dict(v1=25474, v2=26242, v3=18051)[args.variant]:
         raise RuntimeError('Unexpected NTU60 parameter count; review the algorithm/config.')
     # With r=1 the explicit scan must reproduce the standard fused Mamba block.
     tokens = torch.randn(2, 16, 256, device='cuda')
@@ -56,11 +59,21 @@ def main():
     amp = args.precision == 'amp'
     scaler = torch.amp.GradScaler('cuda', enabled=amp)
     data = torch.randn(2, 3, 64, 25, 2, device='cuda')
-    data[0, :, :, [0, 4, 8, 12, 16], :] = 0
+    if args.variant != 'v3':
+        data[0, :, :, [0, 4, 8, 12, 16], :] = 0
+    else:
+        print('V3 backward check uses fully observed inputs: verify selector learning without training masks.',
+              flush=True)
     labels = torch.tensor([0, 1], device='cuda')
     before = {name: value.detach().clone() for name, value in model.named_parameters()
               if name.startswith(('temporal_reliability.', 'temporal_local.'))}
     result = run_backward_check(model, optimizer, scaler, data, labels, amp)
+    if args.variant == 'v3':
+        gradient = model.temporal_reliability.score[-1].weight.grad
+        if gradient is None or not torch.isfinite(gradient).all() or gradient.abs().max().item() == 0:
+            raise RuntimeError('V3 selector did not receive finite nonzero gradients on clean inputs.')
+        print('PASS: clean selector gradient {:.6g}; signed residual scale {:.6g}'.format(
+            gradient.abs().max().item(), model.temporal_reliability.scale.tanh().item()), flush=True)
     for prefix in ('temporal_reliability.', 'temporal_local.'):
         changed = [name for name, value in model.named_parameters()
                    if name.startswith(prefix) and not torch.equal(before[name], value.detach())
@@ -68,6 +81,16 @@ def main():
         if not changed:
             raise RuntimeError('No gradient-driven parameter updates in ' + prefix)
         print('Verified new module updates:', changed, flush=True)
+    if args.variant == 'v3':
+        model.eval()
+        masked = data.clone()
+        masked[0, :, :, [0, 4, 8, 12, 16], :] = 0
+        original = masked.clone()
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.float16, enabled=amp):
+            output = model(masked)
+        if output.shape != (2, 60) or not torch.isfinite(output).all() or not torch.equal(masked, original):
+            raise RuntimeError('V3 masked visibility-pooling forward failed or mutated coordinates.')
+        print('PASS: V3 missing-joint CUDA forward is finite and leaves input unchanged.', flush=True)
     print('Verified steps:', result, flush=True)
     print('PASS: improved Mamba CUDA equivalence, finite forward/backward and optimizer updates. '
           'Disposable weights only; no checkpoint was saved.', flush=True)

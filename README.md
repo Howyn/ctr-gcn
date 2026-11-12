@@ -187,6 +187,9 @@ joint masking. It adds 26,242 parameters and has a separate result directory.
 Its matched-augmentation standard-model control is provided but not auto-launched.
 To retain the original training conditions, use the [V2 run without added training occlusion](docs/ntu60_robust_mamba_v2_clean.md).
 Its launcher checks the actual saved standard-run settings and trains only that one new model.
+The [V3 clean-training candidate](docs/ntu60_robust_mamba_v3.md) adds visibility-normalized pooling,
+learns a residual state-write correction on clean inputs, and reduces added parameters to 18,051.
+It keeps the original training inputs/loss and requires CUDA checks and a benchmark before training.
 For unexpectedly large occlusion gains, see the [read-only result and input audit](docs/occlusion_audit.md).
 It checks saved metrics and masks, live branch inputs and clean-pass cache independence.
 

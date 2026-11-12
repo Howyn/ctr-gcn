@@ -157,7 +157,17 @@ def checked_forward(model, data, amp=False, diagnostics=None):
         captured['backbone'] = True
 
     def features_hook(module, arguments, output):
+        captured['features'] = output.clone()
         captured['tokens'] = output.mean(dim=-1).permute(0, 2, 1).contiguous().clone()
+
+    def pool_hook(module, arguments, output):
+        batch, _, _, _, people = original.shape
+        expected = captured['features'].view(batch, people, *captured['features'].shape[1:])
+        require(torch.equal(arguments[0], expected) and torch.equal(arguments[1], original),
+                'Visibility pooling bypassed current backbone features or masked coordinates.')
+        captured['tokens'] = output.permute(0, 1, 3, 2).contiguous().view(
+            batch * people, output.shape[-1], output.shape[-2]).clone()
+        captured['visibility_pool'] = True
 
     def norm_hook(module, arguments, output):
         require(torch.equal(arguments[0], captured['tokens']), 'Temporal branch bypassed current backbone features.')
@@ -173,11 +183,14 @@ def checked_forward(model, data, amp=False, diagnostics=None):
         expected = observed_joint_fraction(original, captured['tokens'].shape[1])
         require(torch.equal(arguments[1], expected), 'Reliability estimator used missingness from another input.')
         captured['observed'], captured['reliability'] = arguments[1].clone(), output.clone()
+        captured['coefficient_kind'] = getattr(module, 'coefficient_kind', 'reliability')
 
     handles.append(model.register_forward_pre_hook(root_hook))
     handles.append(model.data_bn.register_forward_pre_hook(bn_hook))
     handles.append(model.l10.register_forward_hook(features_hook))
     handles.append(model.temporal_norm.register_forward_hook(norm_hook))
+    if getattr(model, 'use_visibility_pooling', False):
+        handles.append(model.temporal_pool.register_forward_hook(pool_hook))
     if getattr(model, 'use_local_compensation', False):
         handles.append(model.temporal_local.register_forward_pre_hook(local_hook))
     if getattr(model, 'use_reliability', False):
@@ -187,6 +200,8 @@ def checked_forward(model, data, amp=False, diagnostics=None):
             result = model(data)
         require(captured.get('root') and captured.get('backbone') and 'normalized' in captured,
                 'Expected model/backbone/temporal hooks were not called.')
+        if getattr(model, 'use_visibility_pooling', False):
+            require(captured.get('visibility_pool'), 'Enabled visibility pooling was not called.')
         if getattr(model, 'use_local_compensation', False):
             require(captured.get('local'), 'Enabled local branch was not called.')
         if getattr(model, 'use_reliability', False):
@@ -194,7 +209,10 @@ def checked_forward(model, data, amp=False, diagnostics=None):
             if diagnostics is not None:
                 for key in ('observed', 'reliability'):
                     value = captured[key].float()
-                    diagnostics[key] = dict(min=float(value.min()), mean=float(value.mean()), max=float(value.max()))
+                    label = captured['coefficient_kind'] if key == 'reliability' else key
+                    diagnostics[label] = dict(min=float(value.min()), mean=float(value.mean()), max=float(value.max()))
+                if captured['coefficient_kind'] == 'residual_write_coefficient':
+                    diagnostics['signed_residual_scale'] = float(model.temporal_reliability.scale.tanh())
         require(torch.equal(data, original), 'A model mutated its input tensor in place.')
         require(result.shape == (len(data), 60) and torch.isfinite(result).all(), 'Invalid live logits.')
         return result.float().cpu()
