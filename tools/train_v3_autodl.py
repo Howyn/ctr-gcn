@@ -1,4 +1,4 @@
-"""Run clean-trained V3, paired clean/20% inference, artifact checks, then power off.
+"""Run a clean V3/V4 experiment, paired inference, artifact checks, then power off.
 
 The comparison uses the existing clean-trained V2 checkpoint. No new training
 masks, extra training runs or independent training-only shutdown watcher.
@@ -43,16 +43,20 @@ def best_reference(directory):
     raise ValueError('Reference V2 has ambiguous best-epoch checkpoints.')
 
 
-def build_plan(repository=ROOT):
+def build_plan(repository=ROOT, variant='v3'):
+    if variant not in ('v3', 'v4'):
+        raise ValueError('Supported experiment identifiers: v3, v4.')
     repository = Path(repository).resolve()
-    config_path = repository / CONFIG
+    config_path = repository / str(CONFIG).replace('v3', variant)
     config = yaml.safe_load(config_path.read_text(encoding='utf-8'))
     standard = yaml.safe_load((repository / STANDARD / 'config.yaml').read_text(encoding='utf-8'))
     reference_dir = repository / REFERENCE
     reference_config = yaml.safe_load((reference_dir / 'config.yaml').read_text(encoding='utf-8'))
-    if (config['model'] != 'model.ctrgcn_mamba_robust_v3.Model'
+    candidate_model = 'model.ctrgcn_mamba_robust_{}.Model'.format(variant)
+    label = variant.upper()
+    if (config['model'] != candidate_model
             or reference_config['model'] != 'model.ctrgcn_mamba_robust_v2.Model'):
-        raise ValueError('Expected the V3 candidate and the existing clean-trained V2 reference.')
+        raise ValueError('Expected {} and the existing clean-trained V2 reference.'.format(label))
     check_comparison(standard, config)
     check_comparison(standard, reference_config)
     if (config.get('num_epoch') != 65 or config.get('seed', 1) != 1
@@ -61,21 +65,24 @@ def build_plan(repository=ROOT):
     work = (repository / config['work_dir']).resolve()
     if (not work.is_relative_to(repository / 'work_dir') or work == repository / 'work_dir'
             or work in (reference_dir.resolve(), (repository / STANDARD).resolve())):
-        raise ValueError('V3 must use a new work directory inside this repository/work_dir.')
+        raise ValueError('{} must use a new work directory inside this repository/work_dir.'.format(label))
     reference_weights = best_reference(reference_dir)
     logs = repository / 'logs'
     return dict(
-        job=dict(role='v3', config_path=config_path, config=config, work=work,
-                 log=logs / 'ntu60_xsub_joint_mamba_robust_v3_clean.log'),
+        variant=variant, label=label, candidate_model=candidate_model,
+        architecture_equivalent_to='model.ctrgcn_mamba_robust_v3.Model',
+        job=dict(role=variant, config_path=config_path, config=config, work=work,
+                 log=logs / 'ntu60_xsub_joint_mamba_robust_{}_clean.log'.format(variant)),
         reference_dir=reference_dir, reference_weights=reference_weights,
         reference_sha256=digest(reference_weights), reference_config=reference_config,
-        output_dir=repository / OUTPUT,
-        evaluation_log=logs / 'occlusion20_robust_v3_clean_seed2026.log',
-        audit_log=logs / 'audit_occlusion20_v3_clean_seed2026.log',
-        audit_report=logs / 'audit_occlusion20_v3_clean_seed2026.json',
-        state_path=logs / 'v3_pipeline_state.json', snapshot=logs / 'v3_pipeline_config.yaml',
-        cuda_log=logs / 'check_mamba_v3_pipeline.log',
-        legacy_watcher_log=logs / 'autodl_shutdown_mamba_robust_v3_clean.log',
+        output_dir=repository / str(OUTPUT).replace('v3', variant),
+        evaluation_log=logs / 'occlusion20_robust_{}_clean_seed2026.log'.format(variant),
+        audit_log=logs / 'audit_occlusion20_{}_clean_seed2026.log'.format(variant),
+        audit_report=logs / 'audit_occlusion20_{}_clean_seed2026.json'.format(variant),
+        state_path=logs / '{}_pipeline_state.json'.format(variant),
+        snapshot=logs / '{}_pipeline_config.yaml'.format(variant),
+        cuda_log=logs / 'check_mamba_{}_pipeline.log'.format(variant),
+        legacy_watcher_log=logs / 'autodl_shutdown_mamba_robust_{}_clean.log'.format(variant),
     )
 
 
@@ -85,7 +92,7 @@ def check_fresh(plan):
                                    'state_path', 'snapshot', 'legacy_watcher_log')]
     for path in paths:
         if path.exists():
-            raise ValueError('Existing V3 run/log/evaluation found; refusing overwrite: ' + str(path))
+            raise ValueError('Existing {} run/log/evaluation found; refusing overwrite: {}'.format(plan['label'], path))
 
 
 def logged_command(command, log, repository, environment, exclusive=True):
@@ -101,11 +108,11 @@ def preflight(plan, repository):
     for filename in ('evaluate_occlusion.py', 'audit_occlusion.py'):
         subprocess.run([sys.executable, str(repository / 'tools' / filename), '--help'],
                        cwd=repository, env=environment, check=True, stdout=subprocess.DEVNULL)
-    print('Checking V3 CUDA/AMP, clean selector gradients and masked forward; log:',
+    print('Checking {} CUDA/AMP, clean selector gradients and masked forward; log:'.format(plan['label']),
           plan['cuda_log'], flush=True)
     logged_command([sys.executable, '-u', str(repository / 'tools/check_robust_mamba.py'),
-                    '--variant', 'v3'], plan['cuda_log'], repository, environment, exclusive=False)
-    print('PASS: V3 CUDA check. Training will use fresh, disposable-check-independent weights.', flush=True)
+                    '--variant', plan['variant']], plan['cuda_log'], repository, environment, exclusive=False)
+    print('PASS: {} CUDA check. Training will use fresh, disposable-check-independent weights.'.format(plan['label']), flush=True)
 
 
 def run_evaluation(plan, checkpoint, repository, environment):
@@ -131,7 +138,7 @@ def verify_evaluation(plan, checkpoint, repository, environment):
     for role, path, model, checksum in (
             ('baseline', plan['reference_weights'], 'model.ctrgcn_mamba_robust_v2.Model',
              plan['reference_sha256']),
-            ('mamba', checkpoint, 'model.ctrgcn_mamba_robust_v3.Model', digest(checkpoint))):
+            ('mamba', checkpoint, plan['candidate_model'], digest(checkpoint))):
         information = summary['checkpoints'][role]
         if (Path(information['checkpoint']).resolve() != Path(path).resolve()
                 or information['checkpoint_sha256'] != checksum or digest(path) != checksum
@@ -139,7 +146,7 @@ def verify_evaluation(plan, checkpoint, repository, environment):
             raise ValueError('Evaluation used a different checkpoint/model: ' + role)
     rows = {row['model']: row for row in summary['results']}
     if len(summary['results']) != 2 or set(rows) != {'baseline', 'mamba'}:
-        raise ValueError('Expected exactly the V2 and V3 evaluation rows.')
+        raise ValueError('Expected exactly the V2 and {} evaluation rows.'.format(plan['label']))
     for row in rows.values():
         clean, masked = row['clean_top1_percent'], row['occluded_top1_percent']
         if (not all(math.isfinite(value) and 0 <= value <= 100 for value in (clean, masked))
@@ -171,6 +178,7 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
     check_fresh(plan)
     job = plan['job']
     state = dict(status='training', created_at_utc=datetime.now(timezone.utc).isoformat(),
+                 experiment=plan['variant'], architecture_equivalent_to=plan['architecture_equivalent_to'],
                  config=str(job['config_path']), config_sha256=digest(job['config_path']),
                  reference_checkpoint=str(plan['reference_weights']),
                  reference_sha256=plan['reference_sha256'], results_verified=False)
@@ -184,14 +192,14 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
     try:
         save_state()
         plan['snapshot'].write_text(yaml.safe_dump(job['config']), encoding='utf-8')
-        print('START training V3, 65 epochs, training joint-mask probability=0.0; log:', job['log'], flush=True)
+        print('START training {}, 65 epochs, training joint-mask probability=0.0; log:'.format(plan['label']), job['log'], flush=True)
         run_training(job, plan['snapshot'], repository, environment)
         training = verified_run(job)
         training_output = persist_results(training, job['work'], job['log'])
         state.update(status='evaluating', training_summary=str(training_output))
         save_state()
         checkpoint = Path(training['best_checkpoint'])
-        print('SAVED training. START paired V2/V3 clean + 20% inference; log:',
+        print('SAVED training. START paired V2/{} clean + 20% inference; log:'.format(plan['label']),
               plan['evaluation_log'], flush=True)
         run_evaluation(plan, checkpoint, repository, environment)
         state['status'] = 'auditing'
@@ -200,7 +208,7 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
         state.update(status='complete', results_verified=True, evaluation=evaluation)
         save_state()
         for row in evaluation['results']:
-            name = 'V2 reference' if row['model'] == 'baseline' else 'V3 candidate'
+            name = 'V2 reference' if row['model'] == 'baseline' else plan['label'] + ' run'
             print('{}: clean {:.4f}%, 20% occluded {:.4f}%'.format(
                 name, row['clean_top1_percent'], row['occluded_top1_percent']), flush=True)
         print('SAVED AND VERIFIED training + inference + artifact audit.', flush=True)
@@ -221,33 +229,35 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
 
 
 @contextmanager
-def controller_lock(repository):
+def controller_lock(repository, variant='v3'):
     import fcntl
     (repository / 'logs').mkdir(exist_ok=True)
-    with (repository / 'logs/v3_pipeline.lock').open('a') as lock:
+    with (repository / 'logs' / '{}_pipeline.lock'.format(variant)).open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ValueError('A V3 training/evaluation controller is already active.') from error
+            raise ValueError('A {} training/evaluation controller is already active.'.format(variant.upper())) from error
         yield
 
 
-def main():
+def main(variant='v3'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-only', action='store_true', help='check configs/reference/paths; no CUDA, training or shutdown')
     args = parser.parse_args()
-    plan = build_plan()
+    plan = build_plan(variant=variant)
     check_fresh(plan)
-    print('PASS: V3 and existing V2 match the original clean-training recipe; no added training masking.', flush=True)
+    if variant == 'v4':
+        print('NOTE: V4 is an independently named rerun of the current V3 algorithm; no model changes.', flush=True)
+    print('PASS: {} and existing V2 match the original clean-training recipe; no added training masking.'.format(plan['label']), flush=True)
     print('Reference V2 checkpoint:', plan['reference_weights'], flush=True)
-    print('V3 output:', plan['job']['work'], flush=True)
+    print('{} output:'.format(plan['label']), plan['job']['work'], flush=True)
     print('20% paired inference output:', plan['output_dir'], flush=True)
     if args.check_only:
         print('Configuration/reference/path checks passed. No training or shutdown requested.')
         return
     if not sys.platform.startswith('linux'):
         parser.error('Launch this pipeline inside the Linux AutoDL instance.')
-    with controller_lock(ROOT):
+    with controller_lock(ROOT, variant):
         check_fresh(plan)
         preflight(plan, ROOT)
         execute_pipeline(plan, ROOT)

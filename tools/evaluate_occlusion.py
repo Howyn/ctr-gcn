@@ -191,11 +191,13 @@ def main():
     work_dirs = dict(baseline=(ROOT / args.baseline_dir).resolve(), mamba=(ROOT / args.mamba_dir).resolve())
     configs = {name: read_config(directory, ('model.ctrgcn.Model', 'model.ctrgcn_mamba.Model',
                                            'model.ctrgcn_mamba_robust_v2.Model',
-                                           'model.ctrgcn_mamba_robust_v3.Model')
+                                           'model.ctrgcn_mamba_robust_v3.Model',
+                                           'model.ctrgcn_mamba_robust_v4.Model')
                                  if name == 'baseline' else ('model.ctrgcn_mamba.Model',
                                                             'model.ctrgcn_mamba_robust.Model',
                                                             'model.ctrgcn_mamba_robust_v2.Model',
-                                                            'model.ctrgcn_mamba_robust_v3.Model'))
+                                                            'model.ctrgcn_mamba_robust_v3.Model',
+                                                            'model.ctrgcn_mamba_robust_v4.Model'))
                for name, directory in work_dirs.items()}
     feeder_args = matching_test_settings(configs)
     same_training_inputs = matching_training_inputs(configs)

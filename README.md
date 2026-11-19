@@ -193,6 +193,9 @@ learns a residual state-write correction on clean inputs, and reduces added para
 It keeps the original training inputs/loss. Its AutoDL pipeline checks CUDA, trains one V3 run,
 evaluates clean and 20%-occluded inputs against clean-trained V2, audits saved artifacts,
 and requests shutdown only after all results are verified and saved.
+The [independently named V4 rerun](docs/ntu60_robust_mamba_v4.md) preserves the current V3
+architecture and training recipe, uses separate outputs, and follows the same train/evaluate/audit/shutdown flow.
+V4 is an experiment namespace change, not a new algorithm or evidence of improved accuracy.
 For unexpectedly large occlusion gains, see the [read-only result and input audit](docs/occlusion_audit.md).
 It checks saved metrics and masks, live branch inputs and clean-pass cache independence.
 
