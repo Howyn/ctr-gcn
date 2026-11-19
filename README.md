@@ -190,7 +190,9 @@ To retain the original training conditions, use the [V2 run without added traini
 Its launcher checks the actual saved standard-run settings and trains only that one new model.
 The [V3 clean-training candidate](docs/ntu60_robust_mamba_v3.md) adds visibility-normalized pooling,
 learns a residual state-write correction on clean inputs, and reduces added parameters to 18,051.
-It keeps the original training inputs/loss and requires CUDA checks and a benchmark before training.
+It keeps the original training inputs/loss. Its AutoDL pipeline checks CUDA, trains one V3 run,
+evaluates clean and 20%-occluded inputs against clean-trained V2, audits saved artifacts,
+and requests shutdown only after all results are verified and saved.
 For unexpectedly large occlusion gains, see the [read-only result and input audit](docs/occlusion_audit.md).
 It checks saved metrics and masks, live branch inputs and clean-pass cache independence.
 
