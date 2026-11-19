@@ -184,7 +184,8 @@ trial keeps the original standard hybrid's clean-only training recipe.
 The [V2 follow-up](docs/ntu60_robust_mamba_v2.md) preserves the direct Mamba path,
 blends local history into uncertain state writes, and adds limited training
 joint masking. It adds 26,242 parameters and has a separate result directory.
-Its matched-augmentation standard-model control is provided but not auto-launched.
+For the matched-augmentation comparison, the [paired AutoDL launcher](docs/matched_maskaug_pair.md)
+trains the standard hybrid first and V2 second, verifies both saved results, then requests shutdown.
 To retain the original training conditions, use the [V2 run without added training occlusion](docs/ntu60_robust_mamba_v2_clean.md).
 Its launcher checks the actual saved standard-run settings and trains only that one new model.
 The [V3 clean-training candidate](docs/ntu60_robust_mamba_v3.md) adds visibility-normalized pooling,
