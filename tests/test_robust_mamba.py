@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import torch
+import torch._dynamo  # Load registrations before temporary sys.modules CUDA stubs.
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml

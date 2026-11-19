@@ -19,7 +19,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.autodl_shutdown import digest, persist_results, request_shutdown, required_file
+from tools.autodl_shutdown import (atomic_copy, digest, persist_results, process_identity,
+                                  request_shutdown, required_file)
 from tools.check_clean_comparison import check_comparison
 from tools.train_maskaug_pair import preflight as training_preflight
 from tools.train_maskaug_pair import run_training, verified_run, write_json
@@ -28,6 +29,28 @@ CONFIG = Path('config/nturgbd-cross-subject/ctrgcn_mamba_robust_v3_clean_fast128
 REFERENCE = Path('work_dir/ntu60/xsub/ctrgcn_mamba_robust_v2_clean_joint_fast128')
 STANDARD = Path('work_dir/ntu60/xsub/ctrgcn_mamba_joint_fast128')
 OUTPUT = Path('work_dir/ntu60/xsub/occlusion20_robust_v3_clean_seed2026')
+V4_ALGORITHM_ID = 'v4_soft_pool_consistent_selective_scan'
+
+
+def require_idle_training(repository, proc_root=Path('/proc')):
+    """Refuse overlapping old/new training rather than stopping unknown PIDs."""
+    repository = Path(repository).resolve()
+    if not proc_root.is_dir():
+        return
+    active = []
+    for process in proc_root.iterdir():
+        if not process.name.isdigit() or process_identity(int(process.name), proc_root) is None:
+            continue
+        try:
+            arguments = (process / 'cmdline').read_bytes().decode().rstrip('\0').split('\0')
+            cwd = (process / 'cwd').resolve(strict=True)
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if cwd == repository and any((cwd / value).resolve() == repository / 'main.py'
+                                     for value in arguments[1:] if not value.startswith('-')):
+            active.append(process.name)
+    if active:
+        raise ValueError('Training is already active (PID {}); do not launch an overlapping run.'.format(', '.join(active)))
 
 
 def best_reference(directory):
@@ -54,11 +77,15 @@ def build_plan(repository=ROOT, variant='v3'):
     reference_config = yaml.safe_load((reference_dir / 'config.yaml').read_text(encoding='utf-8'))
     candidate_model = 'model.ctrgcn_mamba_robust_{}.Model'.format(variant)
     label = variant.upper()
+    run_tag = 'v4_state' if variant == 'v4' else 'v3_clean'
+    log_tag = 'v4_state' if variant == 'v4' else 'v3'
     if (config['model'] != candidate_model
             or reference_config['model'] != 'model.ctrgcn_mamba_robust_v2.Model'):
         raise ValueError('Expected {} and the existing clean-trained V2 reference.'.format(label))
     check_comparison(standard, config)
     check_comparison(standard, reference_config)
+    if variant == 'v4' and config['model_args'].get('algorithm_id') != V4_ALGORITHM_ID:
+        raise ValueError('V4 must use the new consistent-parameter algorithm, not the name-only alias.')
     if (config.get('num_epoch') != 65 or config.get('seed', 1) != 1
             or config.get('save_epoch') != 0):
         raise ValueError('Expected the original 65-epoch, seed-1 recipe with every epoch saved.')
@@ -70,19 +97,21 @@ def build_plan(repository=ROOT, variant='v3'):
     logs = repository / 'logs'
     return dict(
         variant=variant, label=label, candidate_model=candidate_model,
-        architecture_equivalent_to='model.ctrgcn_mamba_robust_v3.Model',
+        architecture_equivalent_to='model.ctrgcn_mamba_robust_v3.Model' if variant == 'v3' else None,
+        algorithm_id=V4_ALGORITHM_ID if variant == 'v4' else 'v3_residual_write_selector',
+        algorithm_source=ROOT / 'model/ctrgcn_mamba_robust_{}.py'.format(variant),
         job=dict(role=variant, config_path=config_path, config=config, work=work,
-                 log=logs / 'ntu60_xsub_joint_mamba_robust_{}_clean.log'.format(variant)),
+                 log=logs / 'ntu60_xsub_joint_mamba_robust_{}.log'.format(run_tag)),
         reference_dir=reference_dir, reference_weights=reference_weights,
         reference_sha256=digest(reference_weights), reference_config=reference_config,
-        output_dir=repository / str(OUTPUT).replace('v3', variant),
-        evaluation_log=logs / 'occlusion20_robust_{}_clean_seed2026.log'.format(variant),
-        audit_log=logs / 'audit_occlusion20_{}_clean_seed2026.log'.format(variant),
-        audit_report=logs / 'audit_occlusion20_{}_clean_seed2026.json'.format(variant),
-        state_path=logs / '{}_pipeline_state.json'.format(variant),
-        snapshot=logs / '{}_pipeline_config.yaml'.format(variant),
-        cuda_log=logs / 'check_mamba_{}_pipeline.log'.format(variant),
-        legacy_watcher_log=logs / 'autodl_shutdown_mamba_robust_{}_clean.log'.format(variant),
+        output_dir=repository / ('work_dir/ntu60/xsub/occlusion20_robust_{}_seed2026'.format(run_tag)),
+        evaluation_log=logs / 'occlusion20_robust_{}_seed2026.log'.format(run_tag),
+        audit_log=logs / 'audit_occlusion20_{}_seed2026.log'.format(run_tag),
+        audit_report=logs / 'audit_occlusion20_{}_seed2026.json'.format(run_tag),
+        state_path=logs / '{}_pipeline_state.json'.format(log_tag),
+        snapshot=logs / '{}_pipeline_config.yaml'.format(log_tag),
+        cuda_log=logs / 'check_mamba_{}_pipeline.log'.format(log_tag),
+        legacy_watcher_log=logs / 'autodl_shutdown_mamba_robust_{}.log'.format(run_tag),
     )
 
 
@@ -108,7 +137,7 @@ def preflight(plan, repository):
     for filename in ('evaluate_occlusion.py', 'audit_occlusion.py'):
         subprocess.run([sys.executable, str(repository / 'tools' / filename), '--help'],
                        cwd=repository, env=environment, check=True, stdout=subprocess.DEVNULL)
-    print('Checking {} CUDA/AMP, clean selector gradients and masked forward; log:'.format(plan['label']),
+    print('Checking {} CUDA/AMP, clean-path gradients and masked forward; log:'.format(plan['label']),
           plan['cuda_log'], flush=True)
     logged_command([sys.executable, '-u', str(repository / 'tools/check_robust_mamba.py'),
                     '--variant', plan['variant']], plan['cuda_log'], repository, environment, exclusive=False)
@@ -144,6 +173,11 @@ def verify_evaluation(plan, checkpoint, repository, environment):
                 or information['checkpoint_sha256'] != checksum or digest(path) != checksum
                 or information['model'] != model):
             raise ValueError('Evaluation used a different checkpoint/model: ' + role)
+    if plan['variant'] == 'v4':
+        candidate = summary['checkpoints']['mamba']
+        if (candidate.get('model_args', {}).get('algorithm_id') != V4_ALGORITHM_ID
+                or candidate.get('parameters') != 1902865):
+            raise ValueError('Evaluation does not identify the actual V4 algorithm/parameter count.')
     rows = {row['model']: row for row in summary['results']}
     if len(summary['results']) != 2 or set(rows) != {'baseline', 'mamba'}:
         raise ValueError('Expected exactly the V2 and {} evaluation rows.'.format(plan['label']))
@@ -179,6 +213,7 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
     job = plan['job']
     state = dict(status='training', created_at_utc=datetime.now(timezone.utc).isoformat(),
                  experiment=plan['variant'], architecture_equivalent_to=plan['architecture_equivalent_to'],
+                 algorithm_id=plan['algorithm_id'], model_source_sha256=digest(plan['algorithm_source']),
                  config=str(job['config_path']), config_sha256=digest(job['config_path']),
                  reference_checkpoint=str(plan['reference_weights']),
                  reference_sha256=plan['reference_sha256'], results_verified=False)
@@ -196,6 +231,12 @@ def execute_pipeline(plan, repository=ROOT, shutdown=True):
         run_training(job, plan['snapshot'], repository, environment)
         training = verified_run(job)
         training_output = persist_results(training, job['work'], job['log'])
+        if plan['variant'] == 'v4':
+            archived_source = required_file(job['work'] / plan['algorithm_source'].name)
+            if (digest(archived_source) != state['model_source_sha256']
+                    or digest(plan['algorithm_source']) != state['model_source_sha256']):
+                raise ValueError('Model source changed during training; refusing mismatched evaluation.')
+            atomic_copy(archived_source, job['work'] / 'model_source_snapshot.py')
         state.update(status='evaluating', training_summary=str(training_output))
         save_state()
         checkpoint = Path(training['best_checkpoint'])
@@ -244,10 +285,12 @@ def main(variant='v3'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-only', action='store_true', help='check configs/reference/paths; no CUDA, training or shutdown')
     args = parser.parse_args()
+    require_idle_training(ROOT)
     plan = build_plan(variant=variant)
     check_fresh(plan)
     if variant == 'v4':
-        print('NOTE: V4 is an independently named rerun of the current V3 algorithm; no model changes.', flush=True)
+        print('ALGORITHM:', plan['algorithm_id'], flush=True)
+        print('V4 uses soft visibility pooling and consistent state/parameter correction; extra parameters: 17921.', flush=True)
     print('PASS: {} and existing V2 match the original clean-training recipe; no added training masking.'.format(plan['label']), flush=True)
     print('Reference V2 checkpoint:', plan['reference_weights'], flush=True)
     print('{} output:'.format(plan['label']), plan['job']['work'], flush=True)
@@ -258,6 +301,7 @@ def main(variant='v3'):
     if not sys.platform.startswith('linux'):
         parser.error('Launch this pipeline inside the Linux AutoDL instance.')
     with controller_lock(ROOT, variant):
+        require_idle_training(ROOT)
         check_fresh(plan)
         preflight(plan, ROOT)
         execute_pipeline(plan, ROOT)

@@ -15,11 +15,10 @@ def main():
     import torch
     import mamba_ssm
     import causal_conv1d
-    if args.variant in ('v3', 'v4'):
-        if args.variant == 'v4':
-            from model.ctrgcn_mamba_robust_v4 import Model
-        else:
-            from model.ctrgcn_mamba_robust_v3 import Model
+    if args.variant == 'v4':
+        from model.ctrgcn_mamba_robust_v4 import ALGORITHM_ID, Model, consistent_mamba as reliable_mamba
+    elif args.variant == 'v3':
+        from model.ctrgcn_mamba_robust_v3 import Model
         from model.ctrgcn_mamba_robust_v2 import reliable_mamba
     elif args.variant == 'v2':
         from model.ctrgcn_mamba_robust_v2 import Model, reliable_mamba
@@ -42,8 +41,12 @@ def main():
                   graph='graph.ntu_rgb_d.Graph', graph_args={'labeling_mode': 'spatial'}).cuda()
     print('Parameters:', sum(parameter.numel() for parameter in model.parameters()),
           'extra:', model.extra_parameters, 'budget: 200000', flush=True)
-    if model.extra_parameters != dict(v1=25474, v2=26242, v3=18051, v4=18051)[args.variant]:
+    if model.extra_parameters != dict(v1=25474, v2=26242, v3=18051, v4=17921)[args.variant]:
         raise RuntimeError('Unexpected NTU60 parameter count; review the algorithm/config.')
+    if args.variant == 'v4':
+        if model.algorithm_id != ALGORITHM_ID or sum(p.numel() for p in model.temporal_reliability.parameters()) != 0:
+            raise RuntimeError('V4 must use the actual parameter-free consistency algorithm.')
+        print('ALGORITHM:', model.algorithm_id, flush=True)
     # With r=1 the explicit scan must reproduce the standard fused Mamba block.
     tokens = torch.randn(2, 16, 256, device='cuda')
     for amp in (False, True) if args.precision == 'amp' else (False,):
@@ -55,6 +58,15 @@ def main():
                                    atol=3e-3 if amp else 2e-5)
         print('PASS: r=1 {} equivalence; max absolute difference {:.6g}'.format(
             'AMP' if amp else 'FP32', (improved - standard).abs().max().item()), flush=True)
+    if args.variant == 'v4':
+        with torch.no_grad(), torch.autocast('cuda', enabled=False):
+            gate = torch.full((2, 16, 1), 0.8, device='cuda')
+            corrected = reliable_mamba(model.temporal_mamba, tokens, gate)
+            write_only = reliable_mamba(model.temporal_mamba, tokens, gate, parameter_correction=False)
+        difference = (corrected - write_only).abs().max().item()
+        if not torch.isfinite(corrected).all() or difference == 0:
+            raise RuntimeError('V4 selective-parameter correction did not change the partial-observation path.')
+        print('PASS: V4 parameter correction changes partial-observation scan; max difference {:.6g}'.format(difference), flush=True)
 
     model.train()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.02, momentum=0.9,
@@ -64,20 +76,23 @@ def main():
     data = torch.randn(2, 3, 64, 25, 2, device='cuda')
     if args.variant not in ('v3', 'v4'):
         data[0, :, :, [0, 4, 8, 12, 16], :] = 0
-    else:
+    elif args.variant == 'v3':
         print('{} backward check uses fully observed inputs: verify selector learning without training masks.'.format(args.variant.upper()),
               flush=True)
+    else:
+        print('V4 uses fully observed inputs: verify the retained local/Mamba training path. The consistency rule has no trainable scorer.', flush=True)
     labels = torch.tensor([0, 1], device='cuda')
+    prefixes = ('temporal_local.', 'temporal_mamba.') if args.variant == 'v4' else ('temporal_reliability.', 'temporal_local.')
     before = {name: value.detach().clone() for name, value in model.named_parameters()
-              if name.startswith(('temporal_reliability.', 'temporal_local.'))}
+              if name.startswith(prefixes)}
     result = run_backward_check(model, optimizer, scaler, data, labels, amp)
-    if args.variant in ('v3', 'v4'):
+    if args.variant == 'v3':
         gradient = model.temporal_reliability.score[-1].weight.grad
         if gradient is None or not torch.isfinite(gradient).all() or gradient.abs().max().item() == 0:
             raise RuntimeError('{} selector did not receive finite nonzero gradients on clean inputs.'.format(args.variant.upper()))
         print('PASS: clean selector gradient {:.6g}; signed residual scale {:.6g}'.format(
             gradient.abs().max().item(), model.temporal_reliability.scale.tanh().item()), flush=True)
-    for prefix in ('temporal_reliability.', 'temporal_local.'):
+    for prefix in prefixes:
         changed = [name for name, value in model.named_parameters()
                    if name.startswith(prefix) and not torch.equal(before[name], value.detach())
                    and value.grad is not None and value.grad.abs().max().item() > 0]
@@ -94,6 +109,10 @@ def main():
         if output.shape != (2, 60) or not torch.isfinite(output).all() or not torch.equal(masked, original):
             raise RuntimeError('{} masked visibility-pooling forward failed or mutated coordinates.'.format(args.variant.upper()))
         print('PASS: {} missing-joint CUDA forward is finite and leaves input unchanged.'.format(args.variant.upper()), flush=True)
+        if args.variant == 'v4':
+            model.train()
+            masked_result = run_backward_check(model, optimizer, scaler, masked, labels, amp)
+            print('PASS: V4 partial-observation AMP backward/SGD:', masked_result, flush=True)
     print('Verified steps:', result, flush=True)
     print('PASS: improved Mamba CUDA equivalence, finite forward/backward and optimizer updates. '
           'Disposable weights only; no checkpoint was saved.', flush=True)

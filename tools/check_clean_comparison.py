@@ -30,9 +30,10 @@ def check_comparison(reference, candidate):
         'model.ctrgcn_mamba_robust_v3.Model': dict(use_visibility_pooling=True, use_reliability=True,
                                                 use_local_compensation=True, use_history_compensation=True,
                                                 history_window=3),
-        'model.ctrgcn_mamba_robust_v4.Model': dict(use_visibility_pooling=True, use_reliability=True,
+        'model.ctrgcn_mamba_robust_v4.Model': dict(algorithm_id='v4_soft_pool_consistent_selective_scan',
+                                                use_visibility_pooling=True, use_reliability=True,
                                                 use_local_compensation=True, use_history_compensation=True,
-                                                history_window=3),
+                                                use_parameter_correction=True, history_window=3),
     }
     if candidate['model'] not in variants:
         raise ValueError('Candidate must use the declared V2, V3 or V4 architecture.')

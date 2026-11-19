@@ -1,7 +1,7 @@
-"""Independent V4 experiment name for the current V3 algorithm and full pipeline.
+"""Train the V4 soft-pooling/consistent-parameter algorithm, evaluate, then stop.
 
-This does not introduce an algorithm change. All output/log/lock paths are V4;
-existing V3 results are preserved. Train, evaluate 20% occlusion, audit, power off.
+This replaces the abandoned name-only V4 alias. The new algorithm ID and state
+output directories prevent confusing those results with the actual V4 model.
 """
 
 from pathlib import Path
