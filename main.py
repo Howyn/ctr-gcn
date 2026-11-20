@@ -6,6 +6,7 @@ import inspect
 import os
 import pickle
 import random
+import re
 import shutil
 import sys
 import time
@@ -63,6 +64,17 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Unsupported value encountered.')
+
+
+def checkpoint_position(path):
+    """Return completed epoch/step from this trainer's weights-only filename."""
+    match = re.fullmatch(r'runs-(\d+)-(\d+)\.pt', os.path.basename(os.fspath(path)))
+    if match is None:
+        raise ValueError('Expected a runs-{{epoch}}-{{step}}.pt checkpoint: {}'.format(path))
+    epoch, step = map(int, match.groups())
+    if epoch < 1:
+        raise ValueError('Checkpoint epoch must be positive: {}'.format(path))
+    return epoch, step
 
 
 def get_parser():
@@ -154,6 +166,9 @@ def get_parser():
         '--weights',
         default=None,
         help='the weights for network initialization')
+    parser.add_argument('--prior-best-weights', default=None,
+                        help='previous clean-best weights to retain during weights-only continuation; '
+                             'requires --weights and --start-epoch; optimizer/scaler/RNG are not restored')
     parser.add_argument(
         '--ignore-weights',
         type=str,
@@ -372,13 +387,18 @@ class Processor():
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
-            self.global_step = int(arg.weights[:-3].split('-')[-1])
+            try:
+                _, self.global_step = checkpoint_position(self.arg.weights)
+            except ValueError:
+                if self.arg.prior_best_weights:
+                    raise
+                self.global_step = 0
             self.print_log('Load weights from {}.'.format(self.arg.weights))
             if '.pkl' in self.arg.weights:
                 with open(self.arg.weights, 'r') as f:
                     weights = pickle.load(f)
             else:
-                weights = torch.load(self.arg.weights)
+                weights = torch.load(self.arg.weights, map_location='cpu', weights_only=True)
 
             weights = OrderedDict([[k.split('module.')[-1], v.cuda(output_device)] for k, v in weights.items()])
 
@@ -391,6 +411,11 @@ class Processor():
                         else:
                             self.print_log('Can Not Remove Weights: {}.'.format(key))
 
+            if self.arg.prior_best_weights:
+                if self.arg.ignore_weights:
+                    raise ValueError('Weights-only continuation must not ignore model weights.')
+                self.model.load_state_dict(weights, strict=True)
+                return
             try:
                 self.model.load_state_dict(weights)
             except:
@@ -599,12 +624,84 @@ class Processor():
                 writer.writerow(each_acc)
                 writer.writerows(confusion)
 
+    def initialize_prior_best(self):
+        """Re-evaluate/import an earlier best without changing the resumed model.
+
+        Historical checkpoints contain model weights only. This preserves the
+        best candidate across the interruption, not optimizer/scaler continuity.
+        """
+        path = self.arg.prior_best_weights
+        if not path:
+            return
+        if not self.arg.weights or self.arg.phase != 'train':
+            raise ValueError('--prior-best-weights requires training with --weights.')
+        prior_epoch, _ = checkpoint_position(path)
+        completed_epoch, _ = checkpoint_position(self.arg.weights)
+        if completed_epoch != self.arg.start_epoch or prior_epoch > completed_epoch:
+            raise ValueError('Continuation start epoch must match the latest checkpoint, '
+                             'and prior-best epoch must not be later.')
+        sources = list(dict.fromkeys((os.fspath(path), os.fspath(self.arg.weights))))
+        destinations = [os.path.join(self.arg.work_dir, os.path.basename(source)) for source in sources]
+        for source, target in zip(sources, destinations):
+            if os.path.abspath(source) == os.path.abspath(target) or os.path.exists(target):
+                raise ValueError('Continuation checkpoint destination already exists; '
+                                 'use a new continuation work directory.')
+        weights = torch.load(path, map_location='cpu', weights_only=True)
+        weights = OrderedDict((key.removeprefix('module.'), value) for key, value in weights.items())
+        model = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+        current = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+        modes = [(module, module.training) for module in self.model.modules()]
+        old_step, old_best, old_best_epoch = self.global_step, self.best_acc, self.best_acc_epoch
+        rng = (torch.get_rng_state(), np.random.get_state(), random.getstate(),
+               torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None)
+        succeeded = False
+        try:
+            model.load_state_dict(weights, strict=True)
+            self.best_acc = float('-inf')
+            self.best_acc_epoch = 0
+            self.print_log('Re-evaluate previous clean-best checkpoint: {}'.format(path))
+            self.eval(prior_epoch - 1, save_score=False, loader_name=['test'])
+            if not np.isfinite(self.best_acc) or not 0 <= self.best_acc <= 1:
+                raise ValueError('Previous best checkpoint produced invalid clean accuracy.')
+            self.best_acc_epoch = prior_epoch
+            if os.path.abspath(path) != os.path.abspath(self.arg.weights):
+                # The latest weights are saved before evaluation; an interrupted
+                # epoch may never have received its clean test evaluation.
+                model.load_state_dict(current, strict=True)
+                self.print_log('Evaluate latest completed training checkpoint: {}'.format(self.arg.weights))
+                self.eval(completed_epoch - 1, save_score=False, loader_name=['test'])
+                if not np.isfinite(self.best_acc) or not 0 <= self.best_acc <= 1:
+                    raise ValueError('Latest checkpoint produced invalid clean accuracy.')
+            # Both pre-interruption candidates remain eligible for final best
+            # selection even if no remaining epoch exceeds their clean score.
+            for source, target in zip(sources, destinations):
+                shutil.copy2(source, target)
+            succeeded = True
+        finally:
+            model.load_state_dict(current, strict=True)
+            for module, training in modes:
+                module.training = training
+            self.global_step = old_step
+            torch.set_rng_state(rng[0])
+            np.random.set_state(rng[1])
+            random.setstate(rng[2])
+            if rng[3] is not None:
+                torch.cuda.set_rng_state_all(rng[3])
+            if not succeeded:
+                self.best_acc, self.best_acc_epoch = old_best, old_best_epoch
+        self.print_log('Retained prior best: epoch {}, clean {:.4f}%.'.format(
+            self.best_acc_epoch, 100 * self.best_acc))
+        self.print_log('WEIGHTS-ONLY CONTINUATION: optimizer momentum, AMP scaler and '
+                       'historical RNG state were not saved and cannot be restored.')
+
     def start(self):
         if self.arg.phase == 'benchmark':
             self.benchmark()
         elif self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
-            self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
+            if not self.arg.weights:
+                self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
+            self.initialize_prior_best()
             def count_parameters(model):
                 return sum(p.numel() for p in model.parameters() if p.requires_grad)
             self.print_log(f'# Parameters: {count_parameters(self.model)}')
@@ -618,7 +715,7 @@ class Processor():
 
             # test the best model
             weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'-*.pt'))[0]
-            weights = torch.load(weights_path)
+            weights = torch.load(weights_path, map_location='cpu', weights_only=True)
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
                     weights = OrderedDict([['module.'+k, v.cuda(self.output_device)] for k, v in weights.items()])

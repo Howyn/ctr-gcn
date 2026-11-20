@@ -81,3 +81,25 @@ cat /root/autodl-tmp/ctr-gcn/work_dir/ntu60/xsub/occlusion20_robust_v4_state_see
 ```
 
 已有本版输出时脚本会拒绝覆盖。旧 V3、旧命名版 V4 的目录不需要删除。本版是否达到干净精度和81%以上遮挡精度目标，以正式训练和配对评测结果为准。
+
+## 中断后续训并自动评测、关机
+
+原脚本的 `runs-*.pt` 只包含模型权重，未保存 SGD 动量、AMP 缩放器或随机数状态。下面执行的是权重续训，不能视为与未中断训练完全等价。实验摘要会记录这一限制；学习率仍按原绝对轮次计算，训练总轮数仍为65，不新增遮挡增强。
+
+```bash
+cd /root/autodl-tmp/ctr-gcn
+git pull --ff-only origin main
+source /root/autodl-tmp/venv-ctr-infer/bin/activate
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+mkdir -p logs
+python tools/resume_v4_autodl.py --check-only
+nohup python -u tools/resume_v4_autodl.py \
+  >> logs/v4_state_resume_pipeline.log 2>&1 < /dev/null &
+echo "V4续训、评测及关机流程 PID: $!"
+tail -f logs/v4_state_resume_pipeline.log
+```
+
+脚本自动选择最近可读取且权重有限的检查点；例如第56轮权重完整时，从第57轮续到第65轮，损坏时回退到最近可用轮次。它在新目录保存恢复结果，不覆盖中断目录；原有最佳权重和中断前最后权重会先在干净测试集重新评估，参与整个实验的最佳权重选择。随后与既有无增强V2进行干净/20%遮挡配对推理，校验保存的掩码、分数和指标，全部通过后才请求关机。
+
+首次恢复的训练目录为 `work_dir/ntu60/xsub/ctrgcn_mamba_robust_v4_state_joint_fast128_resume1`；评测目录为 `work_dir/ntu60/xsub/occlusion20_robust_v4_state_resume1_seed2026`。实际路径由检查输出列明。该脚本只接续原始中断V4；不要对同一任务启动多个控制进程，也不要另挂训练结束即关机的旧监控。
